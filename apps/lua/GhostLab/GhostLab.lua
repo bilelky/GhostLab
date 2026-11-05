@@ -6,7 +6,7 @@
 local VERSION = '1.0'
 
 local DEFAULTS = { yOffset = 0, hideDist = 4, fadeLen = 8, shadows = 1, showGhost = 1, autoOwn = 1, selected = '',
-  timeAttack = 1, trackOnly = 1, carOnly = 0, style = 0, alpha = 0.30, standIn = 1, skipVersion = '' }
+  timeAttack = 1, trackOnly = 1, carOnly = 0, style = 0, alpha = 0.30, standIn = 1, skipVersion = '', justUpdated = '' }
 local cfg = {}
 do
   local ok, st = pcall(ac.storage, DEFAULTS, 'GHOSTLAB_')
@@ -120,7 +120,10 @@ local function loadGhost(name)
   if not ok or not txt then return nil end
   local G = { meta = {}, t = {}, pos = {}, x = {}, y = {}, z = {}, lx = {}, ly = {}, lz = {}, ux = {}, uy = {}, uz = {},
     spd = {}, gas = {}, brk = {}, gear = {}, hg = {}, n = 0, name = name }
+  local lines = 0
   for line in txt:gmatch('[^\r\n]+') do
+    lines = lines + 1
+    if S.yielding and lines % 800 == 0 then coroutine.yield() end
     local k, v = line:match('^# (%w+)=(.*)$')
     if k then G.meta[k] = v
     elseif line:sub(1, 2) == 'S,' then
@@ -476,9 +479,13 @@ local function pickSkin(carId, wanted)
   return first
 end
 
+local function isNode(v) return v ~= nil and v ~= false and v ~= 'loading' end
+
 local function applyGhostSkin(carId, wanted)
   local node = GH.cache[carId]
-  if not node then return end
+  GH.pendingSkin = GH.pendingSkin or {}
+  if node == 'loading' then GH.pendingSkin[carId] = wanted or '' return end   -- applied once the model is loaded
+  if not isNode(node) then return end
   local skin = pickSkin(carId, wanted)
   GH.skin = GH.skin or {}
   GH.livery = GH.livery or {}
@@ -490,68 +497,115 @@ local function applyGhostSkin(carId, wanted)
   GH.livery[carId] = (io.fileExists and io.fileExists(lv)) and lv or false
 end
 
--- 3D model of a car, loaded once and kept (hidden) for later switches
+local onModelReady   -- set below: called when a model finishes loading
+
+-- 3D model of a car, loaded once in the background (no freeze) and kept hidden for later switches.
+-- Returns node, error, loading.
 local function ensureModel(carId)
   local c = GH.cache[carId]
   GH.cacheErr = GH.cacheErr or {}
-  if c ~= nil then return c or nil, c == false and (GH.cacheErr[carId] or '3D model unavailable') or nil end
+  if c == 'loading' then return nil, nil, true end
+  if c ~= nil then return c or nil, c == false and (GH.cacheErr[carId] or '3D model unavailable') or nil, false end
   local kn5 = findKN5(carId)
   if not kn5 then
     GH.cache[carId] = false
     GH.cacheErr[carId] = 'Car "' .. carId .. '" is not installed: delta only, no 3D model.'
-    return nil, GH.cacheErr[carId]
+    return nil, GH.cacheErr[carId], false
   end
   local node
   local ok, err = pcall(function()
     local root = ac.findNodes('carsRoot:yes')
     node = root:createBoundingSphereNode('GhostLab_' .. carId, 4) or root:createNode('GhostLab_' .. carId, false)
-    local model = node:loadKN5(kn5)
-    if not model then error('could not load the model') end
-    node:setShadows(cfg.shadows == 1)
     node:setVisible(false)
   end)
-  if not ok then
+  if not ok or not node then
     if node then pcall(function() node:dispose() end) end
     GH.cache[carId] = false
     GH.cacheErr[carId] = '3D model not loaded (' .. tostring(err) .. '): delta only.'
-    return nil, GH.cacheErr[carId]
+    return nil, GH.cacheErr[carId], false
   end
-  GH.cache[carId] = node
-  pcall(function() node:findMeshes('?'):ensureUniqueMaterials() end)   -- skin changes stay on the ghost
-  GH.parts = GH.parts or {}
-  GH.parts[carId] = buildParts(node)
-  return node, nil
+  GH.cache[carId] = 'loading'
+  local function done(errL, model)
+    if errL or not model then
+      pcall(function() node:dispose() end)
+      GH.cache[carId] = false
+      GH.cacheErr[carId] = '3D model not loaded (' .. tostring(errL or 'no model') .. '): delta only.'
+    else
+      pcall(function() node:setShadows(cfg.shadows == 1); node:setVisible(false) end)
+      pcall(function() node:findMeshes('?'):ensureUniqueMaterials() end)   -- skin changes stay on the ghost
+      GH.parts = GH.parts or {}
+      GH.parts[carId] = buildParts(node)
+      GH.cache[carId] = node
+      local pending = GH.pendingSkin and GH.pendingSkin[carId]
+      if pending then GH.pendingSkin[carId] = nil; applyGhostSkin(carId, pending ~= '' and pending or nil) end
+    end
+    if onModelReady then onModelReady(carId) end
+  end
+  if node.loadKN5Async then
+    local okA, errA = pcall(function() node:loadKN5Async(kn5, done) end)
+    if not okA then done(tostring(errA), nil) end
+  else
+    local okS, model = pcall(function() return node:loadKN5(kn5) end)
+    done(not okS and tostring(model) or nil, okS and model or nil)
+  end
+  local now = GH.cache[carId]
+  if now == 'loading' then return nil, nil, true end
+  return isNode(now) and now or nil, not isNode(now) and GH.cacheErr[carId] or nil, false
 end
 
 local function unloadGhost()
   if GH.node then pcall(function() GH.node:setVisible(false) end) end
-  GH.node, GH.G, GH.delta, GH.visible, GH.carId, GH.modelId, GH.draw = nil, nil, nil, false, nil, nil, nil
+  GH.node, GH.G, GH.delta, GH.visible, GH.carId, GH.modelId, GH.draw, GH.loadingModel = nil, nil, nil, false, nil, nil, nil, nil
+end
+
+-- model of the current ghost: its own car, else your car as a stand-in (setting); waits for models still loading
+local function attachModel()
+  local G = GH.G
+  if not G then return end
+  local carId = G.meta.car or ''
+  local node, err, loading = ensureModel(carId)
+  local modelId = carId
+  if loading then
+    GH.loadingModel, GH.node, GH.modelId = carId, nil, nil
+    return
+  end
+  if not node and cfg.standIn == 1 then
+    local own = ac.getCarID(0)
+    if own and own ~= '' and own ~= carId then
+      local n2, _, l2 = ensureModel(own)
+      if l2 then
+        GH.loadingModel, GH.node, GH.modelId = own, nil, nil
+        GH.err = 'Car "' .. carId .. '" is not installed: loading your car as a stand-in...'
+        return
+      end
+      if n2 then
+        node, modelId = n2, own
+        err = 'Car "' .. carId .. '" is not installed: shown with your car as a stand-in (trajectory and delta are the ghost\'s).'
+      end
+    end
+  end
+  GH.loadingModel = nil
+  GH.node, GH.modelId, GH.standIn, GH.visible = node, node and modelId or nil, modelId ~= carId, false
+  if err then GH.err = err end
+  if node then applyGhostSkin(modelId, (modelId == carId) and G.meta.skin or nil) end
+end
+
+onModelReady = function(carId)
+  if GH.loadingModel == carId then attachModel() end
 end
 
 -- installs a ghost that is already in memory (loaded file or lap that just ended)
 local function useGhost(G)
   local carId = G.meta.car or ''
-  if GH.node and GH.carId ~= carId then pcall(function() GH.node:setVisible(false) end) end
-  GH.G, GH.idx, GH.delta, GH.ySm, GH.draw = G, 1, nil, nil, nil
-  if GH.carId ~= carId or not GH.node then
-    GH.visible = false
-    local node, err = ensureModel(carId)
-    local modelId = carId
-    -- car not installed: your own car's model stands in for it (the ghost's trajectory and delta are its own)
-    if not node and cfg.standIn == 1 then
-      local own = ac.getCarID(0)
-      if own and own ~= '' and own ~= carId then
-        local n2 = ensureModel(own)
-        if n2 then
-          node, modelId = n2, own
-          err = 'Car "' .. carId .. '" is not installed: shown with your car as a stand-in (trajectory and delta are the ghost\'s).'
-        end
-      end
-    end
-    GH.node, GH.carId, GH.modelId, GH.standIn = node, carId, modelId, modelId ~= carId
-    if err then GH.err = err end
+  local sameModel = GH.node and GH.carId == carId
+  if GH.node and not sameModel then pcall(function() GH.node:setVisible(false) end) end
+  GH.G, GH.idx, GH.delta, GH.ySm, GH.draw, GH.carId = G, 1, nil, nil, nil, carId
+  if sameModel then
+    if not GH.standIn then applyGhostSkin(GH.modelId, G.meta.skin) end
+  else
+    GH.node, GH.visible = nil, false
+    attachModel()
   end
-  if GH.node then applyGhostSkin(GH.modelId, (not GH.standIn) and G.meta.skin or nil) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -938,26 +992,40 @@ end
 -- ---------------------------------------------------------------------------
 local ghostList, listT = {}, -10
 local started = false
+local STARTUP = nil
+local justUpdated = cfg.justUpdated or ''
+if justUpdated ~= '' then cfg.justUpdated = '' end
 function script.update(dt)
   S.t = S.t + dt
   local sim = ac.getSim()
   if not sim then return end
   if not started then
     started = true
-    -- your best lap already saved for this car and this track ("me", or "moi" before 1.4)
+    -- your best lap already saved for this car and this track ("me", or "moi" before 1.4): from the file names only
     local prefix = trackKey() .. '__' .. safeName(ac.getCarID(0)) .. '__'
     for _, f in ipairs(listGhosts()) do
-      if f:sub(1, #prefix) == prefix and isOwnDriver(parseGhostName(f).driver) then
-        local okL, txt = pcall(io.load, ghostDir() .. f)
-        local ms = okL and txt and tonumber(txt:match('# lapMs=(%d+)'))
-        if ms and (not OWN.best or ms < OWN.best) then OWN.best = ms end
+      if f:sub(1, #prefix) == prefix then
+        local e = parseGhostName(f)
+        if isOwnDriver(e.driver) and e.lapMs and (not OWN.best or e.lapMs < OWN.best) then OWN.best = e.lapMs end
       end
     end
+    if justUpdated ~= '' then say('GhostLab updated to ' .. VERSION) end
+    -- last selected ghost: loaded over a few frames (no hitch when the session starts)
     if cfg.selected ~= '' then
       local okList = false
       for _, f in ipairs(listGhosts()) do if f == cfg.selected then okList = true end end
-      if okList then selectGhost(cfg.selected) end
+      if okList then
+        local name = cfg.selected
+        STARTUP = coroutine.create(function() selectGhost(name) end)
+      end
     end
+  end
+  if STARTUP then
+    S.yielding = true
+    local okC, errC = coroutine.resume(STARTUP)
+    S.yielding = false
+    if not okC then GH.err = 'Could not load the ghost: ' .. tostring(errC) end
+    if not okC or coroutine.status(STARTUP) == 'dead' then STARTUP = nil end
   end
   if not opt(sim, 'isReplayActive') and SCAN.phase then SCAN.phase, SCAN.home = nil, nil end
   if opt(sim, 'isReplayActive') then
@@ -1155,7 +1223,7 @@ local function tabGhost()
     end
     if cfg.style ~= 1 and ui.checkbox('Ghost shadow', cfg.shadows == 1) then
       cfg.shadows = cfg.shadows == 1 and 0 or 1
-      for _, nd in pairs(GH.cache) do if nd then pcall(function() nd:setShadows(cfg.shadows == 1) end) end end
+      for _, nd in pairs(GH.cache) do if isNode(nd) then pcall(function() nd:setShadows(cfg.shadows == 1) end) end end
     end
     ui.setNextItemWidth(180)
     local vf, chf = ui.slider('##fade', cfg.fadeLen, 0, 20, 'Fade over %.0f m')

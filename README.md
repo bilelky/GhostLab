@@ -34,7 +34,7 @@ Visual only: no collision, nothing is applied to your car.
    - **GhostLab**: main window (ghost list, settings, replay recording);
    - **GhostLab Delta**: live delta, place it wherever you like.
 
-Updating: when a new version is out, GhostLab shows a message at the top of its window when you open it. **Install update** downloads it and replaces the app files (your ghosts and settings are kept), then **Restart GhostLab now**. **Release page** opens the download page, **Skip this version** hides the message for that version. You can also replace the files by hand.
+Updating: when a new version is out, GhostLab shows a message at the top of its window when you open it (one small background request the first time the window opens, nothing at game start). **Install update** downloads it, replaces the app files (your ghosts and settings are kept) and reloads GhostLab in game: no need to restart Assetto Corsa. **Release page** opens the download page, **Skip this version** hides the message for that version. You can also replace the files by hand.
 
 ## Usage
 
@@ -68,7 +68,7 @@ On by default (**Time attack** checkbox in the Ghost tab).
 4. The lap is saved to the list 2 s after the line and stays selected, so your next session starts against your best lap.
 5. With no ghost selected, your first valid lap becomes the ghost, then each faster lap.
 
-Your car's 3D model is loaded once when the session starts (a small hitch is possible then, none when crossing the line).
+3D models are loaded in the background (no freeze when the session starts or when crossing the line); the ghost appears as soon as its model is ready, the delta works right away.
 
 ### Ghost list
 

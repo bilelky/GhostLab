@@ -1,6 +1,7 @@
--- GhostLab update check: when the main window is opened, asks the Exchange server for the latest version
--- (GitHub's latest release). If newer, shows a message with "Install update": the release zip is downloaded,
--- checked, and its apps/lua/GhostLab files are copied over this app, then GhostLab restarts.
+-- GhostLab update check: the first time the main window is opened, asks the Exchange server (one small request,
+-- in the background) for the latest version (GitHub's latest release). Only when it is newer, a message offers
+-- "Install update": the release zip is downloaded, checked, its apps/lua/GhostLab files are copied over this app,
+-- and GhostLab reloads itself in game (no need to restart Assetto Corsa).
 
 local json = require('src/json')
 
@@ -129,7 +130,9 @@ return function(G)
           return
         end
         U.state, U.msg, U.installed = 'installed', nil, v
-        G.say('GhostLab ' .. v .. ' installed')
+        G.say('GhostLab ' .. v .. ' installed, reloading...')
+        G.cfg.justUpdated = v
+        U.restartIn = 3   -- reload a few frames later, once this frame is done
       end)
     end)
   end
@@ -137,11 +140,21 @@ return function(G)
   -- banner at the top of the main window --------------------------------------------------------------------------------
   function U.banner()
     U.check()
+    if U.restartIn then
+      U.restartIn = U.restartIn - 1
+      if U.restartIn <= 0 then
+        U.restartIn = nil
+        if not pcall(ac.restartApp) then U.restartFailed = true end
+      end
+    end
     if U.state == 'idle' or U.hiddenThisSession then return end
     local info = U.info
     if U.state == 'installed' then
-      ui.textColored('GhostLab ' .. tostring(U.installed) .. ' installed. Restart GhostLab to use it.', G.GREEN)
-      if ui.button('Restart GhostLab now') then pcall(ac.restartApp) end
+      if U.restartFailed then
+        ui.textColored('GhostLab ' .. tostring(U.installed) .. ' installed: restart Assetto Corsa to use it.', G.GREEN)
+      else
+        ui.textColored('GhostLab ' .. tostring(U.installed) .. ' installed, reloading...', G.GREEN)
+      end
       ui.separator()
       return
     end
