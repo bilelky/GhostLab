@@ -43,7 +43,7 @@ Updating: when a new version is out, GhostLab shows a message at the top of its 
 1. Put the `.acreplay` file in `Documents\Assetto Corsa\replay\`.
 2. Open it (Content Manager > Replays, or the in-game replay).
 3. Focus the car you want (camera on that car).
-4. GhostLab > **Replay** tab > **Find laps**. GhostLab moves through the replay on its own (about 5 s for a 5-minute replay) and lists every complete lap of that car with its time.
+4. GhostLab > **Replay** tab > **Find laps**. GhostLab moves through the replay on its own (about 5 s for a 5-minute replay) and lists every complete lap of that car with its time, fastest first (the sort button switches to slowest first or lap order).
 5. Click **Export as ghost** next to the lap you want. GhostLab records that lap by moving through the replay (about a third of the lap time, e.g. ~30 s for a 1:30 lap at 60 fps), saves it, and puts the replay back where it was.
 
 Do not touch the replay controls while it scans (a progress percentage is shown, with a Cancel button).
@@ -83,10 +83,11 @@ Performance: the see-through ghost of a car that is in the session (yours, typic
 Open the **Exchange** tab.
 
 1. The first time, choose your Exchange name (shown on your ghosts and comments). No account or password: GhostLab is identified by Custom Shaders Patch's own signature, like CSP's Setup Exchange.
-2. **Browse**: by default you see the ghosts shared on the loaded track, fastest first. Filters: this track, other versions of this track, all tracks; my car only; cars I have; my ghosts. Search by title, driver or car. Sort by fastest, newest, most liked, most downloaded or trending.
+2. **Browse**: by default you see the ghosts shared on the loaded track, fastest first. Filters: this track, other versions of this track, all tracks; my car only; cars I have; my ghosts. Search by title, name or car. Sort by fastest, newest, most liked, most downloaded or trending.
 3. **Download**: the ghost is saved in your ghosts folder and selected right away when it was recorded on the loaded track (another version of the track is aligned automatically). Then the button becomes **Drive against it**.
-4. **Like, dislike, comment** on any ghost; **Report** a fake or broken one (a ghost reported several times is hidden until a moderator checks it).
-5. **Share**: select a ghost in the Ghost tab and click **Share on the Exchange** (or pick one in "Share a ghost"), give it a title and an optional description (setup, conditions, tips), click **Share on the Exchange**. **Remove** takes it back at any time.
+4. **Like, dislike, comment** on any ghost (**Comments** opens a small window; click the button again or its X to close it); **Report** a fake or broken one (a ghost reported several times is hidden until a moderator checks it).
+5. **Share**: select a ghost in the Ghost tab and click **Share on the Exchange** (or pick one in "Share a ghost"), give it a title and an optional description (track temperature, weather, setup, tips), click **Share on the Exchange**. **Remove** takes it back at any time.
+   A shared ghost always shows the Exchange name of the person who shares it: a lap exported from someone else's replay never carries that driver's name.
 
 What happens when cars differ:
 
@@ -111,7 +112,7 @@ Send the `.csv` file from the ghosts folder. The other driver only needs GhostLa
 
 ## Settings
 
-"Show ghost" and "Ghost look" are always shown in the Ghost tab. The other look settings are in the **Ghost settings** section below them (folded by default, click to open).
+"Show ghost" and "Ghost look" are shown in the Ghost tab. The other look settings are in the **Ghost settings** section below them (folded by default, click to open). With "Show ghost" off, the ghost settings are hidden: no ghost on track, the delta and the saving of your best laps keep working.
 
 | Setting | Default | Effect |
 |---|---|---|

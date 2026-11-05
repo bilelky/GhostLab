@@ -266,8 +266,10 @@ return function(G)
       local track = item.trackID .. ((item.layout or '') ~= '' and ('-' .. item.layout) or '')
       local base = G.safeName(track) .. '__' .. G.safeName(item.carID) .. '__'
       local tail = '__' .. G.fmtLap(item.lapMs):gsub('[:%.]', '-') .. '.csv'
-      local driver = G.safeName(item.driver ~= '' and item.driver or item.userName)
-      if G.isOwnDriver(driver) then driver = G.safeName(item.userName) end
+      local sender = (item.userName or ''):gsub('[\r\n]', '')
+      if sender == '' then sender = 'Exchange' end
+      body = body:gsub('\n# driver=[^\r\n]*', '\n# driver=' .. sender:gsub('%%', '%%%%'), 1)
+      local driver = G.safeName(sender)
       local name = base .. driver .. tail
       local idx = loadIndex()
       if io.fileExists(G.ghostDir() .. name) and idx[item.ghostID] ~= name then name = base .. driver .. '_x' .. item.ghostID .. tail end
@@ -281,7 +283,7 @@ return function(G)
       G.refreshList()
       if andSelect then
         G.selectGhost(name)
-        G.say('Ghost ready: ' .. G.fmtLap(item.lapMs) .. ' (' .. (item.driver or '') .. ')')
+        G.say('Ghost ready: ' .. G.fmtLap(item.lapMs) .. ' (' .. (item.userName or '') .. ')')
       else
         G.say('Ghost downloaded: ' .. name)
       end
@@ -353,8 +355,7 @@ return function(G)
     local sx, sy, sz, fx, fy, fz, perimeter = nil, nil, nil, nil, nil, nil, 0
     for line in txt:gmatch('[^\r\n]+') do
       if line:sub(1, 9) == '# driver=' then
-        if G.isOwnDriver(line:sub(10)) then line = '# driver=' .. userName end
-        out[#out + 1] = line
+        out[#out + 1] = '# driver=' .. userName   -- never the original driver's name: the ghost is credited to who shares it
       elseif line:sub(1, 13) == '# exchangeID=' or line:sub(1, 11) == '# sharedBy=' then
         -- local information only
       elseif line:sub(1, 2) == 'S,' then
@@ -524,8 +525,8 @@ return function(G)
     ui.textColored('Share: ' .. shareLabel(cur), G.GREEN)
     ui.setNextItemWidth(math.max(200, ui.availableSpaceX() - 50))
     S.title = ui.inputText('Title##xtitle', S.title)
+    ui.textDisabled('Description (optional): track temp, weather, fuel, tyres, setup, tips...')
     S.description = ui.inputText('##xdesc', S.description, 0, vec2(math.max(200, ui.availableSpaceX()), 50))
-    ui.textDisabled('Description (optional)')
     if ST.me and (ST.me.userName or '') == '' then ui.textColored('Choose your Exchange name first.', G.ORANGE) end
     if S.busy then
       ui.textColored('Uploading...', G.GREY)
@@ -662,6 +663,7 @@ return function(G)
   end
 
   local function openComments(item)
+    if canPopup and ST.popupFor == item.ghostID then ST.popupFor = nil return end
     loadComments(item)
     if item.description == nil then   -- older server: description only in the ghost's details
       api('GET', 'ghosts/' .. item.ghostID, nil, function(err, r)
@@ -672,17 +674,16 @@ return function(G)
       ST.open[item.ghostID] = not ST.open[item.ghostID]
       return
     end
-    if ST.popupFor == item.ghostID then ST.popupFor = nil return end
+    -- the Comments button toggles the window (see the top of this function); its X closes it too;
+    -- another ghost's comments replace it
     ST.popupFor = item.ghostID
-    local closeCounter = 0
     local pos = nil
     pcall(function() pos = ui.itemRectMin() + ui.windowPos() + vec2(0, 22 - ui.getScrollY()) end)
     ui.popup(function()
-      if ST.popupFor ~= item.ghostID or closeCounter > 1 then
+      if ST.popupFor ~= item.ghostID then
         ui.closePopup()
         return
       end
-      if not ui.windowFocused() then closeCounter = closeCounter + 1 else closeCounter = 0 end
       drawComments(item, true)
     end, {
       size = { initial = vec2(420, 320) },
@@ -700,12 +701,10 @@ return function(G)
     ui.textColored(G.fmtLap(item.lapMs), G.GREEN)
     ui.sameLine()
     ui.text(item.title or '')
-    -- car and driver; the sender only when it is someone else than the driver
-    local drv = driverName(item.driver)
+    -- car and the person who shared it (never the original driver of a replay lap)
     local sender = item.userName or ''
     local line = (item.carName ~= '' and item.carName or carName(item.carID))
-    if drv ~= '' then line = line .. '  -  ' .. drv end
-    if sender ~= '' and sender ~= drv then line = line .. (drv ~= '' and '  -  shared by ' or '  -  ') .. sender end
+    if sender ~= '' then line = line .. '  -  ' .. sender end
     ui.textDisabled(line)
     if ST.f.track ~= 1 and not isCurrentTrack(item) then
       local tn = tostring(item.trackName or ''):gsub('^"(.*)"$', '%1')

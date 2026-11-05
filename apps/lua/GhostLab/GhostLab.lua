@@ -3,7 +3,7 @@
 -- Driving: pick a ghost recorded on the same circuit (another version of it is aligned automatically).
 -- Visual only: no collision, nothing is applied to your car.
 
-local VERSION = '1.0'
+local VERSION = '1.0.1'
 
 local DEFAULTS = { yOffset = 0, hideDist = 4, fadeLen = 8, shadows = 1, showGhost = 1, autoOwn = 1, selected = '',
   timeAttack = 1, trackOnly = 1, carOnly = 0, style = 0, alpha = 0.30, standIn = 1, skipVersion = '', justUpdated = '', useSkins = 0, lightModel = 1 }
@@ -1221,7 +1221,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Interface
 local GREEN, ORANGE, GREY = rgbm(0.3, 0.9, 0.4, 1), rgbm(1, 0.7, 0.2, 1), rgbm(0.6, 0.6, 0.6, 1)
-local UI = { confirmDelete = nil, confirmT = -10 }
+local UI = { confirmDelete = nil, confirmT = -10, lapSort = 1 }
 
 -- GhostLab Exchange (src/exchange.lua): shared ghosts with titles, likes, comments, filters and search
 local Exchange, exchangeErr = nil, nil
@@ -1362,6 +1362,10 @@ local function tabGhost()
   if GH.err then ui.textColored(GH.err, ORANGE) end
   ui.separator()
   if ui.checkbox('Show ghost', cfg.showGhost == 1) then cfg.showGhost = cfg.showGhost == 1 and 0 or 1 end
+  if cfg.showGhost ~= 1 then
+    ui.textDisabled(cfg.autoOwn == 1 and 'Ghost hidden: no car on track. The delta and the saving of your best laps keep working.'
+      or 'Ghost hidden: no car on track. The delta keeps working.')
+  else
   ui.setNextItemWidth(180)
   ui.combo('Ghost look', cfg.style == 1 and 'See-through ghost' or 'Full car', function()
     for k, name in ipairs({ 'Full car', 'See-through ghost' }) do
@@ -1441,6 +1445,7 @@ local function tabGhost()
         TA.last and string.format(' (last gain %.3f s)', TA.last) or ''))
     end
   end
+  end
   if ui.button('Open ghosts folder') then pcall(os.showInExplorer, ghostDir()) end
 end
 
@@ -1466,7 +1471,7 @@ local function tabReplay()
   end
   local idx = math.floor(num(opt(sim, 'focusedCar'), 0))
   local car = ac.getCar(idx)
-  ui.text(string.format('Focused car: %s (%s)', ac.getCarName and ac.getCarName(idx) or ac.getCarID(idx), tostring(opt(car, 'driverName') or '')))
+  ui.text(string.format('Focused car: %s (%s)', ac.getCarName and ac.getCarName(idx) or ac.getCarID(idx), driverOf(idx)))
   ui.separator()
 
   -- 1. export a lap without playing the replay
@@ -1487,7 +1492,17 @@ local function tabReplay()
       else scanStart(sim, 'coarse', idx, 0, total - 1, math.floor(1000 / fms + 0.5)) end
     end
     ui.textWrapped('Scans the whole replay for this car: no need to wait for the lap or to start before the line.')
-    for k = 1, #SCAN.laps do
+    -- order of the list: fastest first by default
+    local order = {}
+    for k = 1, #SCAN.laps do order[k] = k end
+    if #SCAN.laps > 1 then
+      local labels = { 'Sort: fastest first', 'Sort: slowest first', 'Sort: lap order' }
+      if ui.button(labels[UI.lapSort] .. '##lapSort') then UI.lapSort = UI.lapSort % 3 + 1 end
+      local function t(k) local l = SCAN.laps[k] return tonumber(l.rec and l.rec.ms or l.ms) or math.huge end
+      if UI.lapSort == 1 then table.sort(order, function(a, b) if t(a) ~= t(b) then return t(a) < t(b) end return a < b end)
+      elseif UI.lapSort == 2 then table.sort(order, function(a, b) if t(a) ~= t(b) then return t(a) > t(b) end return a < b end) end
+    end
+    for _, k in ipairs(order) do
       local lap = SCAN.laps[k]
       ui.text(string.format('Lap %d: %s%s', lap.n, lap.rec and fmtLap(lap.rec.ms) or ('~' .. fmtLap(lap.ms)), lap.pit and '  (pit lane)' or ''))
       ui.sameLine()
