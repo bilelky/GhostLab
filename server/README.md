@@ -12,12 +12,14 @@ Identity works like CSP's Setup Exchange: no account, no password. GhostLab asks
 2. **R2 object storage > Create bucket**: name `ghostlab-ghosts`.
 3. **Workers & Pages > Create > Worker > Start with Hello World**: name `ghostlab-exchange`, **Deploy**.
 4. **Edit code**: replace everything with `src/worker.js`, **Deploy**.
-5. Worker **Settings > Bindings > Add binding**:
+5. Worker **Settings > Bindings > Add binding** (the names below are suggestions: any D1 and R2 binding name works):
    - D1 database: variable name `DB`, database `ghostlab-exchange`;
    - R2 bucket: variable name `BUCKET`, bucket `ghostlab-ghosts`.
 6. Worker **Settings > Variables and Secrets > Add**: type **Secret**, name `SALT`, value a long random string (never change it afterwards: user IDs depend on it).
 7. Open `https://ghostlab-exchange.<your-subdomain>.workers.dev/stats`: `{"ghosts":0,"users":0,"comments":0}` means it works.
 8. Put that address (without `/stats`) in `apps/lua/GhostLab/ExchangeConfig.lua`.
+
+Updates: set a plain text variable `GITHUB_REPO` (`owner/repo`) and the latest GitHub release (tag `v1.1`, a `.zip` asset with `apps/lua/GhostLab/` inside) is offered in GhostLab, with one-click install. Without GitHub, set `LATEST_VERSION` and `DOWNLOAD_URL` (and optionally `RELEASE_PAGE`, `RELEASE_NOTES`) instead.
 
 Moderators: connect once from GhostLab, copy "Your ID" in the Exchange tab (Account), then add a plain text variable `MODERATORS` (comma separated IDs) to the Worker. Moderators can remove any ghost or comment, see hidden ghosts and use `POST /mod/ban`, `/mod/unban` (`{"userID": "..."}`) and `/mod/hide/<ghostID>` (`{"hidden": 1}`).
 
@@ -41,12 +43,13 @@ All responses are JSON (`{"error": "..."}` with a 4xx status on failure). Authen
 | `POST /session/finish` `{userID, header, signature}` | Checks the signature, returns `{session, userID, userName, moderator}`. |
 | `GET /me`, `POST /me` `{userName}` | Current user, choose a name (3 to 24 characters, unique). |
 | `GET /ghosts` | List: `trackID`, `layout`, `near` (track length in m: other versions of the circuit), `carID`, `userName`, `mine=1`, `search`, `orderBy` (`fastest`, `newest`, `liked`, `downloads`, `hot`), `offset`, `limit` (max 50). Returns `{total, items}`. |
-| `POST /ghosts` | Share: `{title, description, file (base64, gzip or CSP ac.compress output), trackName, trackLengthM, carName, carBrand, carAuthor, carVersion, carUrl, carFingerprint, cspVersion, appVersion}`. The file is checked (time, speed and distance coherence, lap length). |
+| `POST /ghosts` | Share: `{title, description, file (base64, gzip or CSP ac.compress output), trackName, trackLengthM, carName, carBrand, carAuthor, carVersion, carUrl, carFingerprint, cspVersion, appVersion}`. The file is checked (time, speed and distance coherence, lap length); its driver is replaced by the sharer's Exchange name. |
 | `GET /ghosts/<id>`, `DELETE /ghosts/<id>` | Details; remove (owner or moderator). |
 | `GET /ghosts/<id>/file` | Ghost file (CSV). |
 | `POST /ghosts/<id>/vote` `{direction: 1, -1 or 0}` | Like, dislike, remove the vote. |
 | `GET/POST /ghosts/<id>/comments`, `DELETE /comments/<id>` | Comments (`{text}`, up to 1000 characters). |
 | `POST /ghosts/<id>/report` `{reason}` | Report. Hidden after 3 reports from different users. |
+| `GET /version` | Latest GhostLab release `{version, download, page, notes}` (empty version when none is set). |
 | `GET /stats`, `GET /privacy` | Counters; privacy page. |
 
 Limits per user and per day: 15 ghosts, 60 comments, 600 votes. 30 new sessions per hour per IP address.

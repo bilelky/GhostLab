@@ -3,7 +3,9 @@
 //
 // Bindings: DB (D1 database), BUCKET (R2 bucket).
 // Variables: SALT (secret, any long random string, never change it once users exist),
-//            MODERATORS (optional, comma separated user IDs, shown in GhostLab as "Your ID").
+//            MODERATORS (optional, comma separated user IDs, shown in GhostLab as "Your ID"),
+//            GITHUB_REPO (optional, "owner/repo": the latest GitHub release is offered as an update in GhostLab),
+//            or LATEST_VERSION + DOWNLOAD_URL (+ RELEASE_PAGE, RELEASE_NOTES) to announce an update by hand.
 //
 // Identity works like CSP's Setup Exchange: no account, no password. GhostLab signs a server challenge with Custom
 // Shaders Patch's own key (shared/utils/signing), the server checks the signature with CSP's public key, so every
@@ -57,6 +59,7 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(userID, createdDate)`,
   `CREATE TABLE IF NOT EXISTS reports (ghostID INTEGER, userID TEXT, reason TEXT, createdDate INTEGER, PRIMARY KEY (ghostID, userID))`,
   `CREATE TABLE IF NOT EXISTS downloads (ghostID INTEGER, who TEXT, PRIMARY KEY (ghostID, who))`,
+  `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT, t INTEGER)`,
 ];
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -337,8 +340,8 @@ async function uploadGhost(ctx) {
   const trackLengthM = Number(p.trackLengthM) > 0 ? Math.min(Number(p.trackLengthM), 100000) : 0;
   const chk = checkGhost(g, trackLengthM);
 
-  let driver = str(g.meta.driver, 60) || u.userName;
-  if (/^(me|moi)$/i.test(driver)) driver = u.userName;
+  // a shared ghost is credited to the person who shares it, never to the original driver of a replay lap
+  const driver = u.userName;
   const file = new TextEncoder().encode(rebuildGhost(g, driver));
   const gz = await gzip(file);
   const blobKey = `ghosts/${now()}-${randomToken(12)}.csv.gz`;
@@ -363,7 +366,7 @@ function safeUrl(v) {
   return /^https?:\/\/[^\s"'<>]+$/i.test(s) ? s : '';
 }
 
-const LIST_COLUMNS = `g.ghostID, g.createdDate, g.userName, g.title, g.trackID, g.layout, g.trackName, g.trackLengthM, g.carID,
+const LIST_COLUMNS = `g.ghostID, g.createdDate, g.userName, g.title, g.description, g.trackID, g.layout, g.trackName, g.trackLengthM, g.carID,
   g.carName, g.carBrand, g.carAuthor, g.carVersion, g.carUrl, g.carFingerprint, g.skin, g.driver, g.lapMs, g.source,
   g.samples, g.lapLengthM, g.sizeBytes, g.statLikes, g.statDislikes, g.statDownloads, g.statComments, g.hidden`;
 
@@ -373,6 +376,7 @@ function shapeItem(row, u) {
   if (!(u && u.moderator)) delete item.userID;
   if (item.myVote === null || item.myVote === undefined) item.myVote = 0;
   delete item.blobKey;
+  if ('driver' in item) item.driver = item.userName || '';   // ghosts shared before: no original driver name either
   return item;
 }
 
@@ -403,8 +407,8 @@ async function listGhosts(ctx) {
   const search = str(q.get('search'), 60);
   if (search) {
     const s = '%' + likeEscape(search) + '%';
-    where.push(`(g.title LIKE ? ESCAPE '\\' OR g.userName LIKE ? ESCAPE '\\' OR g.driver LIKE ? ESCAPE '\\' OR g.carName LIKE ? ESCAPE '\\')`);
-    args.push(s, s, s, s);
+    where.push(`(g.title LIKE ? ESCAPE '\\' OR g.userName LIKE ? ESCAPE '\\' OR g.carName LIKE ? ESCAPE '\\')`);
+    args.push(s, s, s);
   }
   if (!(u && u.moderator && q.get('includeHidden') === '1')) where.push('g.hidden = 0');
   const order = {
@@ -664,6 +668,38 @@ async function stats(ctx) {
   return json(r, 200, { 'Cache-Control': 'public, max-age=300' });
 }
 
+// latest GhostLab version, for the update message in the app: GitHub's latest release (cached 10 min) or variables
+async function latestVersion(ctx) {
+  const env = ctx.env;
+  let info = null;
+  if (env.LATEST_VERSION) {
+    info = { version: str(env.LATEST_VERSION, 20), download: safeUrl(env.DOWNLOAD_URL), page: safeUrl(env.RELEASE_PAGE),
+      notes: str(env.RELEASE_NOTES, 1500) };
+  } else if (env.GITHUB_REPO && /^[\w.\-]+\/[\w.\-]+$/.test(env.GITHUB_REPO)) {
+    const key = 'release:' + env.GITHUB_REPO;
+    const cached = await env.DB.prepare('SELECT v, t FROM kv WHERE k = ?').bind(key).first();
+    if (cached && cached.t > now() - 600) {
+      info = JSON.parse(cached.v);
+    } else {
+      try {
+        const api = (env.GITHUB_API || 'https://api.github.com') + '/repos/' + env.GITHUB_REPO + '/releases/latest';
+        const headers = { 'User-Agent': 'GhostLab-Exchange', 'Accept': 'application/vnd.github+json' };
+        if (env.GITHUB_TOKEN) headers.Authorization = 'Bearer ' + env.GITHUB_TOKEN;
+        const res = await fetch(api, { headers });
+        if (!res.ok) throw new Error('GitHub ' + res.status);
+        const rel = await res.json();
+        const asset = (rel.assets || []).find(a => /\.zip$/i.test(a.name || '') && !/server/i.test(a.name || ''));
+        info = { version: str(String(rel.tag_name || '').replace(/^v/i, ''), 20), download: asset ? safeUrl(asset.browser_download_url) : '',
+          page: safeUrl(rel.html_url), notes: str(rel.body, 1500) };
+        await env.DB.prepare('INSERT OR REPLACE INTO kv (k, v, t) VALUES (?, ?, ?)').bind(key, JSON.stringify(info), now()).run();
+      } catch (e) {
+        if (cached) info = JSON.parse(cached.v);   // GitHub unreachable or rate limited: last known release
+      }
+    }
+  }
+  return json(info || { version: '' }, 200, { 'Cache-Control': 'public, max-age=300' });
+}
+
 const PRIVACY = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GhostLab Exchange - Confidentialité</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;color:#222;background:#fff}h1{font-size:1.4em}h2{font-size:1.1em;margin-top:1.6em}@media(prefers-color-scheme:dark){body{background:#151515;color:#ddd}}</style></head><body>
 <h1>GhostLab Exchange : données et confidentialité / data and privacy</h1>
@@ -695,6 +731,7 @@ async function route(ctx) {
   if (m === 'GET' && p0 === 'privacy') return new Response(PRIVACY, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
   await ensureSchema(ctx.env);
   if (p0 === 'stats' && m === 'GET') return stats(ctx);
+  if (p0 === 'version' && m === 'GET') return latestVersion(ctx);
   if (p0 === 'session' && parts[1] === 'begin' && m === 'POST') return sessionBegin(ctx);
   if (p0 === 'session' && parts[1] === 'finish' && m === 'POST') return sessionFinish(ctx);
   if (p0 === 'me' && parts.length === 1) {
@@ -727,11 +764,26 @@ async function route(ctx) {
   fail(404, `Unknown endpoint: ${m} ${url.pathname}`);
 }
 
+// bindings: DB and BUCKET, or any D1 / R2 binding whatever its name
+function resolveBindings(env) {
+  let db = env.DB, bucket = env.BUCKET;
+  for (const k of Object.keys(env)) {
+    const v = env[k];
+    if (!v || typeof v !== 'object') continue;
+    if (!db && typeof v.prepare === 'function' && typeof v.batch === 'function') db = v;
+    else if (!bucket && typeof v.put === 'function' && typeof v.get === 'function' && typeof v.head === 'function' && typeof v.list === 'function') bucket = v;
+  }
+  return { db, bucket };
+}
+
 export default {
-  async fetch(request, env, execCtx) {
+  async fetch(request, rawEnv, execCtx) {
+    const { db, bucket } = resolveBindings(rawEnv);
+    const env = Object.assign({}, rawEnv, { DB: db, BUCKET: bucket });
     const ctx = { request, env, url: new URL(request.url), waitUntil: p => execCtx.waitUntil(p) };
     try {
-      if (!env.DB || !env.BUCKET) fail(500, 'Server not configured: DB and BUCKET bindings are required');
+      if (!env.DB) fail(500, 'Server not configured: add a D1 database binding to the Worker (Settings > Bindings)');
+      if (!env.BUCKET) fail(500, 'Server not configured: add an R2 bucket binding to the Worker (Settings > Bindings)');
       return await route(ctx);
     } catch (e) {
       if (e instanceof HttpError) return json({ error: e.message }, e.status);
