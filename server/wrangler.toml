@@ -1,0 +1,18 @@
+# GhostLab Exchange - Cloudflare Worker configuration (used by `npx wrangler deploy`, optional: the dashboard works too)
+name = "ghostlab-exchange"
+main = "src/worker.js"
+compatibility_date = "2026-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ghostlab-exchange"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "ghostlab-ghosts"
+
+# Moderators: comma separated user IDs (GhostLab shows yours in the Exchange tab as "Your ID")
+[vars]
+MODERATORS = ""
+# SALT is a secret: `npx wrangler secret put SALT`
