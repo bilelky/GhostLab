@@ -228,7 +228,11 @@ return function(G)
     if not append then L.items, L.total = {}, 0 end
     local t, l = currentTrack()
     local p = { 'orderBy=' .. ORDERS[ST.f.orderBy][1], 'limit=20', 'offset=' .. (append and #L.items or 0) }
-    if ST.f.track == 1 then
+    local searching = ST.f.search:gsub('%s', '') ~= ''
+    L.searched = searching and ST.f.search or nil
+    if searching then
+      -- a search looks everywhere: title, description, car, track, name, on every track
+    elseif ST.f.track == 1 then
       p[#p + 1] = 'trackID=' .. urlEncode(t); p[#p + 1] = 'layout=' .. urlEncode(l)
     elseif ST.f.track == 2 then
       p[#p + 1] = 'trackID=' .. urlEncode(t); p[#p + 1] = 'layout=' .. urlEncode(l)
@@ -599,11 +603,17 @@ return function(G)
     end
     ui.setNextItemWidth(200)
     local s, _, enter = ui.inputText('##xsearch', ST.f.search)
+    if ui.itemHovered() then ui.setTooltip('Title, car, track or name, on every track. Several words: all must match.') end
     ST.f.search = s
     ui.sameLine()
     if ui.button('Search') or enter then changed = true end
     ui.sameLine()
     if ui.button('Refresh') then changed = true end
+    if ST.list.searched then
+      ui.sameLine()
+      if ui.button('Clear##xsearchClear') then ST.f.search = ''; changed = true end
+      ui.textDisabled('Search results on every track (title, car, track, name)')
+    end
     if changed then X.refresh() end
   end
 
@@ -706,7 +716,7 @@ return function(G)
     local line = (item.carName ~= '' and item.carName or carName(item.carID))
     if sender ~= '' then line = line .. '  -  ' .. sender end
     ui.textDisabled(line)
-    if ST.f.track ~= 1 and not isCurrentTrack(item) then
+    if not isCurrentTrack(item) then
       local tn = tostring(item.trackName or ''):gsub('^"(.*)"$', '%1')
       ui.textDisabled('Track: ' .. (tn ~= '' and tn or item.trackID:gsub('_', ' ')))
     end
@@ -787,7 +797,8 @@ return function(G)
     end
     if L.loading then ui.textColored('Loading...', G.GREY)
     elseif L.loaded and #L.items == 0 then
-      ui.textWrapped(ST.f.track == 1 and 'No ghost shared on this track yet with these filters. Share yours!' or 'No ghost found with these filters.')
+      ui.textWrapped(L.searched and string.format('No ghost found for "%s".', L.searched)
+        or ST.f.track == 1 and 'No ghost shared on this track yet with these filters. Share yours!' or 'No ghost found with these filters.')
     end
     if hidden > 0 then ui.textDisabled(string.format('%d ghost(s) of cars you do not have hidden', hidden)) end
     if not L.loading and #L.items < (L.total or 0) then

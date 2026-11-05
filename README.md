@@ -83,7 +83,7 @@ Performance: the see-through ghost of a car that is in the session (yours, typic
 Open the **Exchange** tab.
 
 1. The first time, choose your Exchange name (shown on your ghosts and comments). No account or password: GhostLab is identified by Custom Shaders Patch's own signature, like CSP's Setup Exchange.
-2. **Browse**: by default you see the ghosts shared on the loaded track, fastest first. Filters: this track, other versions of this track, all tracks; my car only; cars I have; my ghosts. Search by title, name or car. Sort by fastest, newest, most liked, most downloaded or trending.
+2. **Browse**: by default you see the ghosts shared on the loaded track, fastest first. Filters: this track, other versions of this track, all tracks; my car only; cars I have; my ghosts. Search by title, car, track or name: a search looks on every track, and with several words all must match ("bmw monza"). Sort by fastest, newest, most liked, most downloaded or trending.
 3. **Download**: the ghost is saved in your ghosts folder and selected right away when it was recorded on the loaded track (another version of the track is aligned automatically). Then the button becomes **Drive against it**.
 4. **Like, dislike, comment** on any ghost (**Comments** opens a small window; click the button again or its X to close it); **Report** a fake or broken one (a ghost reported several times is hidden until a moderator checks it).
 5. **Share**: select a ghost in the Ghost tab and click **Share on the Exchange** (or pick one in "Share a ghost"), give it a title and an optional description (track temperature, weather, setup, tips), click **Share on the Exchange**. **Remove** takes it back at any time.

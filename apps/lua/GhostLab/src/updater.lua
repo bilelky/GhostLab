@@ -110,14 +110,22 @@ return function(G)
   -- no temporary extraction; GhostLab.lua then manifest.ini written last
   local function installFromMemory(body, info)
     local entries = io.scanZip(body)
-    if type(entries) ~= 'table' or #entries == 0 then fail('Install failed: the zip is empty or damaged' .. MANUAL) return end
-    local set = {}
-    for _, e in ipairs(entries) do set[e:lower()] = e end
+    if type(entries) ~= 'table' or #entries == 0 then
+      fail(string.format('Install failed: the zip is empty or damaged (%d bytes)', #body) .. MANUAL) return
+    end
+    local set, norm = {}, {}
+    for i, e in ipairs(entries) do
+      norm[i] = tostring(e):gsub('\\', '/')
+      set[norm[i]:lower()] = e
+    end
     local root = nil
     for _, prefix in ipairs({ 'apps/lua/ghostlab/', 'ghostlab/', '' }) do
       if set[prefix .. 'manifest.ini'] and set[prefix .. 'ghostlab.lua'] then root = prefix break end
     end
-    if not root then fail('Install failed: GhostLab not found in the zip' .. MANUAL) return end
+    if not root then
+      fail(string.format('Install failed: GhostLab not found in the zip (%d entries: %s)', #entries,
+        table.concat({ tostring(norm[1] or ''), tostring(norm[2] or '') }, ', ')) .. MANUAL) return
+    end
     local manifestKey, mainKey = set[root .. 'manifest.ini'], set[root .. 'ghostlab.lua']
     local manifest = io.loadFromZip(body, manifestKey) or ''
     local main = io.loadFromZip(body, mainKey) or ''
@@ -132,16 +140,16 @@ return function(G)
       local ok, res = pcall(io.save, target, data, true)
       if not ok or res == false then failed[#failed + 1] = rel end
     end
-    for _, e in ipairs(entries) do
-      local rel = e:sub(#root + 1)
-      if e:lower():sub(1, #root) == root and e ~= manifestKey and e ~= mainKey and rel ~= '' and rel:sub(-1) ~= '/'
+    for i, e in ipairs(entries) do
+      local rel = norm[i]:sub(#root + 1)
+      if norm[i]:lower():sub(1, #root) == root and e ~= manifestKey and e ~= mainKey and rel ~= '' and rel:sub(-1) ~= '/'
         and not rel:find('..', 1, true) and not rel:find(':', 1, true) and rel:sub(1, 1) ~= '/' then
         local data = io.loadFromZip(body, e)
         if data then put(rel, data) end
       end
     end
-    put(mainKey:sub(#root + 1), main)
-    put(manifestKey:sub(#root + 1), manifest)
+    put('GhostLab.lua', main)
+    put('manifest.ini', manifest)
     if #failed > 0 then
       fail('Install incomplete (' .. table.concat(failed, ', ') .. ')' .. MANUAL)
       return

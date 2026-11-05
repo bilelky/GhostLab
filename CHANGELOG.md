@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3
+- Exchange search: title, description, car, track and name, on every track. Several words: all must match ("bmw monza"). Clear button.
+- Exchange: the track of a ghost is shown whenever it is not the loaded track.
+
 ## 1.0.2
 - In-app update: the release zip is read in memory and written file by file (the way CSP's AppShelf installs apps), no temporary extraction. Fixes "Install failed: GhostLab not found in the zip".
 
