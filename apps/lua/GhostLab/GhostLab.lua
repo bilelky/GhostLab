@@ -6,7 +6,7 @@
 local VERSION = '1.0'
 
 local DEFAULTS = { yOffset = 0, hideDist = 4, fadeLen = 8, shadows = 1, showGhost = 1, autoOwn = 1, selected = '',
-  timeAttack = 1, trackOnly = 1, carOnly = 0, style = 0, alpha = 0.30, standIn = 1, skipVersion = '', justUpdated = '' }
+  timeAttack = 1, trackOnly = 1, carOnly = 0, style = 0, alpha = 0.30, standIn = 1, skipVersion = '', justUpdated = '', useSkins = 0, lightModel = 1 }
 local cfg = {}
 do
   local ok, st = pcall(ac.storage, DEFAULTS, 'GHOSTLAB_')
@@ -56,6 +56,12 @@ end
 -- your own laps are saved with driver "me" ("moi" in GhostLab 1.0 to 1.3)
 local OWN_DRIVER = 'me'
 local function isOwnDriver(d) return d == 'me' or d == 'moi' end
+-- driver name for display ("" when unknown: files from early versions could hold a technical value instead)
+local function niceDriver(d)
+  d = tostring(d or '')
+  if d == '' or d:match('^function') or d:match('^table') or d:match('^userdata') then return '' end
+  return (d:gsub('_+', ' '))
+end
 
 local function skinOf(idx)
   local ok, sk = pcall(function() return ac.getCarSkinID(idx) end)
@@ -63,6 +69,14 @@ local function skinOf(idx)
 end
 
 local S = { msg = '', msgT = -10, t = 0 }
+
+-- slowest steps (ms), shown in Ghost settings: helps find anything that could freeze the game
+local clock = os.preciseClock or os.clock
+local PERF = {}
+local function perf(label, t0)
+  local ms = (clock() - t0) * 1000
+  if ms > (PERF[label] or 0) then PERF[label] = ms end
+end
 local function say(m) S.msg, S.msgT = m, S.t; pcall(ac.setMessage, 'GhostLab', m) end
 
 -- ---------------------------------------------------------------------------
@@ -362,16 +376,20 @@ end
 -- ---------------------------------------------------------------------------
 -- Ghost display
 local GH = { G = nil, node = nil, model = nil, err = nil, delta = nil, idx = 1, visible = false, cache = {}, carId = nil,
-  parts = {}, skin = {}, livery = {}, draw = nil, fade = 1, fading = false }
+  parts = {}, skin = {}, livery = {}, unique = {}, draw = nil, fade = 1, fading = false }
 
+-- KN5 files of a car: main model and lower detail ones (LOD B, C) when present
 local function findKN5(carId)
   local dir = ac.getFolder(ac.FolderID.ContentCars) .. '\\' .. carId .. '\\'
   local ok, files = pcall(io.scanDir, dir, '*.kn5')
   if not ok or type(files) ~= 'table' or #files == 0 then return nil end
   local main, best, bestSize = nil, nil, -1
+  local lods = {}
   for _, f in ipairs(files) do
     local lf = f:lower()
     if lf == (carId:lower() .. '.kn5') then main = f end
+    local l = lf:match('lod[_%-]?([bcd])%.kn5$')
+    if l then lods[l] = dir .. f end
     if not lf:find('lod') and not lf:find('collider') then
       local sz = 0
       pcall(function() sz = io.getAttributes(dir .. f).fileSize or 0 end)
@@ -379,7 +397,8 @@ local function findKN5(carId)
     end
   end
   local pick = main or best
-  return pick and (dir .. pick) or nil
+  if not pick then return nil end
+  return dir .. pick, lods
 end
 
 -- Ghost look: 0 = full car (its own materials), 1 = see-through ghost.
@@ -429,6 +448,8 @@ local function drawParams()
     depth = { mesh = nil, transform = 'original', async = true, cacheKey = 160102, textures = {}, values = {}, shader = SH_DEPTH },
     solid = { mesh = nil, transform = 'original', async = true, cacheKey = 160103, textures = { txLivery = false },
       values = { gColor = vec3(0.55, 0.57, 0.60), gAlpha = 1, gHasLivery = 0 }, shader = SH_SOLID },
+    shape = { mesh = 0, transform = nil, async = true, cacheKey = 160104, textures = {},
+      values = { gTint = vec3(GHOST_TINT[1], GHOST_TINT[2], GHOST_TINT[3]), gAlpha = 0.3 }, shader = SH_GHOST },
   }
   return DRAW
 end
@@ -463,13 +484,15 @@ end
 
 -- skin of the ghost model: the one recorded with the ghost, else yours (same car), else the car's first skin
 local function carDir(carId) return ac.getFolder(ac.FolderID.ContentCars) .. '\\' .. carId .. '\\' end
-local function pickSkin(carId, wanted)
+local function pickSkin(carId, wanted, firstOnly)
   local skins = carDir(carId) .. 'skins\\'
   local function has(sk) return sk ~= nil and sk ~= '' and io.dirExists and io.dirExists(skins .. sk) end
-  if has(wanted) then return wanted end
-  local own
-  pcall(function() if ac.getCarID(0) == carId then own = ac.getCarSkinID(0) end end)
-  if has(own) then return own end
+  if not firstOnly then
+    if has(wanted) then return wanted end
+    local own
+    pcall(function() if ac.getCarID(0) == carId then own = ac.getCarSkinID(0) end end)
+    if has(own) then return own end
+  end
   local first
   pcall(function()
     io.scanDir(skins, '*', function(name, attr)
@@ -481,81 +504,136 @@ end
 
 local function isNode(v) return v ~= nil and v ~= false and v ~= 'loading' end
 
-local function applyGhostSkin(carId, wanted)
-  local node = GH.cache[carId]
+-- Skin of the ghost model. By default the model keeps the textures built into the car's KN5 (no texture loading,
+-- no freeze); with "Use the ghost's skin" on, the skin is applied (loading its textures can take a moment).
+local function applyGhostSkin(carId, wanted, key)
   GH.pendingSkin = GH.pendingSkin or {}
-  if node == 'loading' then GH.pendingSkin[carId] = wanted or '' return end   -- applied once the model is loaded
-  if not isNode(node) then return end
-  local skin = pickSkin(carId, wanted)
-  GH.skin = GH.skin or {}
-  GH.livery = GH.livery or {}
-  if not skin or GH.skin[carId] == skin then return end
-  GH.skin[carId] = skin
-  local dir = carDir(carId) .. 'skins\\' .. skin
-  pcall(function() node:applySkin(dir) end)
-  local lv = dir .. '\\livery.png'
-  GH.livery[carId] = (io.fileExists and io.fileExists(lv)) and lv or false
+  GH.unique = GH.unique or {}
+  local useSkin = cfg.useSkins == 1
+  local skin = pickSkin(carId, wanted, not useSkin)
+  if skin then
+    local lv = carDir(carId) .. 'skins\\' .. skin .. '\\livery.png'
+    GH.livery[carId] = (io.fileExists and io.fileExists(lv)) and lv or false   -- colour of the fading full car (small file)
+  end
+  if not key or not useSkin or not skin then return end
+  local node = GH.cache[key]
+  if node == 'loading' then GH.pendingSkin[key] = wanted or '' return end   -- applied once the model is loaded
+  if not isNode(node) or GH.skin[key] == skin then return end
+  if not GH.unique[key] then
+    local t0 = clock()
+    pcall(function() node:findMeshes('?'):ensureUniqueMaterials() end)   -- the skin stays on the ghost only
+    GH.unique[key] = true
+    perf('materials', t0)
+  end
+  local t1 = clock()
+  pcall(function() node:applySkin(carDir(carId) .. 'skins\\' .. skin) end)
+  perf('skin', t1)
+  GH.skin[key] = skin
 end
 
 local onModelReady   -- set below: called when a model finishes loading
+local function modelKey(carId, textured) return carId .. (textured and '#full' or '#shape') end
 
--- 3D model of a car, loaded once in the background (no freeze) and kept hidden for later switches.
--- Returns node, error, loading.
-local function ensureModel(carId)
-  local c = GH.cache[carId]
+-- 3D model of a car, loaded once in the background and kept hidden for later switches. Returns node, error, loading.
+-- textured = true (full car look): the car with its textures (LOD B when "Light ghost model" is on).
+-- textured = false (see-through look, car not in the session): a lower detail KN5 alone, no textures to load.
+local function ensureModel(carId, textured)
+  local key = modelKey(carId, textured)
+  local c = GH.cache[key]
   GH.cacheErr = GH.cacheErr or {}
   if c == 'loading' then return nil, nil, true end
-  if c ~= nil then return c or nil, c == false and (GH.cacheErr[carId] or '3D model unavailable') or nil, false end
-  local kn5 = findKN5(carId)
+  if c ~= nil then return c or nil, c == false and (GH.cacheErr[key] or '3D model unavailable') or nil, false end
+  local kn5, lods = findKN5(carId)
   if not kn5 then
-    GH.cache[carId] = false
-    GH.cacheErr[carId] = 'Car "' .. carId .. '" is not installed: delta only, no 3D model.'
-    return nil, GH.cacheErr[carId], false
+    GH.cache[key] = false
+    GH.cacheErr[key] = 'Car "' .. carId .. '" is not installed: delta only, no 3D model.'
+    return nil, GH.cacheErr[key], false
   end
   local node
   local ok, err = pcall(function()
     local root = ac.findNodes('carsRoot:yes')
-    node = root:createBoundingSphereNode('GhostLab_' .. carId, 4) or root:createNode('GhostLab_' .. carId, false)
+    node = root:createBoundingSphereNode('GhostLab_' .. key, 4) or root:createNode('GhostLab_' .. key, false)
     node:setVisible(false)
   end)
   if not ok or not node then
     if node then pcall(function() node:dispose() end) end
-    GH.cache[carId] = false
-    GH.cacheErr[carId] = '3D model not loaded (' .. tostring(err) .. '): delta only.'
-    return nil, GH.cacheErr[carId], false
+    GH.cache[key] = false
+    GH.cacheErr[key] = '3D model not loaded (' .. tostring(err) .. '): delta only.'
+    return nil, GH.cacheErr[key], false
   end
-  GH.cache[carId] = 'loading'
+  GH.cache[key] = 'loading'
+  GH.modelInfo = GH.modelInfo or {}
   local function done(errL, model)
     if errL or not model then
       pcall(function() node:dispose() end)
-      GH.cache[carId] = false
-      GH.cacheErr[carId] = '3D model not loaded (' .. tostring(errL or 'no model') .. '): delta only.'
+      GH.cache[key] = false
+      GH.cacheErr[key] = '3D model not loaded (' .. tostring(errL or 'no model') .. '): delta only.'
     else
       pcall(function() node:setShadows(cfg.shadows == 1); node:setVisible(false) end)
-      pcall(function() node:findMeshes('?'):ensureUniqueMaterials() end)   -- skin changes stay on the ghost
+      local t0 = clock()
       GH.parts = GH.parts or {}
-      GH.parts[carId] = buildParts(node)
-      GH.cache[carId] = node
-      local pending = GH.pendingSkin and GH.pendingSkin[carId]
-      if pending then GH.pendingSkin[carId] = nil; applyGhostSkin(carId, pending ~= '' and pending or nil) end
+      GH.parts[key] = buildParts(node)
+      perf('model setup', t0)
+      GH.cache[key] = node
+      local nm = 0
+      pcall(function() nm = #node:findMeshes('?') end)
+      S.event, S.eventT = string.format('%s added (%s, %d meshes)', carId, GH.modelInfo[key] or 'model', nm), S.t
+      if textured then
+        local pending = GH.pendingSkin and GH.pendingSkin[key]
+        if pending then GH.pendingSkin[key] = nil; applyGhostSkin(carId, pending ~= '' and pending or nil, key) end
+      end
     end
-    if onModelReady then onModelReady(carId) end
+    if onModelReady then onModelReady(key) end
   end
-  if node.loadKN5Async then
+  local t0 = clock()
+  if not textured then
+    local file = lods.c or lods.b or kn5
+    GH.modelInfo[key] = (file == kn5) and 'full model, no LOD' or 'low detail model'
+    if node.loadKN5Async then
+      local okA, errA = pcall(function() node:loadKN5Async(file, done) end)
+      if not okA then done(tostring(errA), nil) end
+    else
+      local okS, model = pcall(function() return node:loadKN5(file) end)
+      done(not okS and tostring(model) or nil, okS and model or nil)
+    end
+    perf('model request (see-through)', t0)
+  elseif lods.b and cfg.lightModel == 1 and node.loadKN5LODAsync then
+    GH.modelInfo[key] = 'light model'
+    local okA, errA = pcall(function() node:loadKN5LODAsync(lods.b, kn5, done) end)
+    if not okA then done(tostring(errA), nil) end
+    perf('model request (full car)', t0)
+  elseif node.loadKN5Async then
+    GH.modelInfo[key] = 'full model'
     local okA, errA = pcall(function() node:loadKN5Async(kn5, done) end)
     if not okA then done(tostring(errA), nil) end
+    perf('model request (full car)', t0)
   else
     local okS, model = pcall(function() return node:loadKN5(kn5) end)
+    perf('model load (old CSP, not in background)', t0)
     done(not okS and tostring(model) or nil, okS and model or nil)
   end
-  local now = GH.cache[carId]
+  local now = GH.cache[key]
   if now == 'loading' then return nil, nil, true end
-  return isNode(now) and now or nil, not isNode(now) and GH.cacheErr[carId] or nil, false
+  return isNode(now) and now or nil, not isNode(now) and GH.cacheErr[key] or nil, false
 end
 
 local function unloadGhost()
   if GH.node then pcall(function() GH.node:setVisible(false) end) end
   GH.node, GH.G, GH.delta, GH.visible, GH.carId, GH.modelId, GH.draw, GH.loadingModel = nil, nil, nil, false, nil, nil, nil, nil
+  GH.render, GH.shapeIdx = nil, nil
+end
+
+-- car of the session using this model (your car first): its simple shape from CSP is drawn as the see-through
+-- ghost with nothing to load
+local CAN_SHAPE = CAN_DRAW and ac.SimpleMesh ~= nil and ac.SimpleMesh.carShape ~= nil and mat4x4 ~= nil
+local function sessionIndexOf(carId)
+  local n = 1
+  pcall(function() n = math.max(1, ac.getSim().carsCount or 1) end)
+  for i = 0, n - 1 do
+    local ok, id = pcall(ac.getCarID, i)
+    if ok and id == carId then return i end
+  end
+  return nil
 end
 
 -- model of the current ghost: its own car, else your car as a stand-in (setting); waits for models still loading
@@ -563,45 +641,63 @@ local function attachModel()
   local G = GH.G
   if not G then return end
   local carId = G.meta.car or ''
-  local node, err, loading = ensureModel(carId)
-  local modelId = carId
-  if loading then
-    GH.loadingModel, GH.node, GH.modelId = carId, nil, nil
-    return
-  end
-  if not node and cfg.standIn == 1 then
+  local ghostLook = cfg.style == 1 and CAN_DRAW
+  local cars = { carId }
+  if cfg.standIn == 1 then
     local own = ac.getCarID(0)
-    if own and own ~= '' and own ~= carId then
-      local n2, _, l2 = ensureModel(own)
-      if l2 then
-        GH.loadingModel, GH.node, GH.modelId = own, nil, nil
-        GH.err = 'Car "' .. carId .. '" is not installed: loading your car as a stand-in...'
+    if own and own ~= '' and own ~= carId then cars[2] = own end
+  end
+  local standInMsg = 'Car "' .. carId .. '" is not installed: shown with your car as a stand-in (trajectory and delta are the ghost\'s).'
+  local firstErr
+  GH.render, GH.shapeIdx = nil, nil
+  for k, cid in ipairs(cars) do
+    local standIn = k > 1
+    if standIn and not firstErr then break end
+    if ghostLook and CAN_SHAPE then
+      local idx = sessionIndexOf(cid)
+      if idx then
+        if GH.node then pcall(function() GH.node:setVisible(false) end) end
+        GH.loadingModel, GH.node, GH.modelId, GH.visible = nil, nil, nil, false
+        GH.render, GH.shapeIdx, GH.standIn = 'shape', idx, standIn
+        if standIn then GH.err = standInMsg end
         return
       end
-      if n2 then
-        node, modelId = n2, own
-        err = 'Car "' .. carId .. '" is not installed: shown with your car as a stand-in (trajectory and delta are the ghost\'s).'
-      end
     end
+    local textured = not ghostLook
+    local node, err, loading = ensureModel(cid, textured)
+    if loading then
+      GH.loadingModel, GH.node, GH.modelId = modelKey(cid, textured), nil, nil
+      if standIn then GH.err = 'Car "' .. carId .. '" is not installed: loading your car as a stand-in...' end
+      return
+    end
+    if node then
+      GH.loadingModel = nil
+      GH.render, GH.node, GH.modelId, GH.modelCar, GH.standIn, GH.visible = 'node', node, modelKey(cid, textured), cid, standIn, false
+      if standIn then GH.err = standInMsg end
+      if textured then applyGhostSkin(cid, (not standIn) and G.meta.skin or nil, GH.modelId)
+      else applyGhostSkin(cid, nil, nil) end
+      return
+    end
+    firstErr = firstErr or err
   end
-  GH.loadingModel = nil
-  GH.node, GH.modelId, GH.standIn, GH.visible = node, node and modelId or nil, modelId ~= carId, false
-  if err then GH.err = err end
-  if node then applyGhostSkin(modelId, (modelId == carId) and G.meta.skin or nil) end
+  GH.loadingModel, GH.node, GH.modelId = nil, nil, nil
+  if firstErr then GH.err = firstErr end
 end
 
-onModelReady = function(carId)
-  if GH.loadingModel == carId then attachModel() end
+onModelReady = function(key)
+  if GH.loadingModel == key then attachModel() end
 end
 
 -- installs a ghost that is already in memory (loaded file or lap that just ended)
 local function useGhost(G)
   local carId = G.meta.car or ''
-  local sameModel = GH.node and GH.carId == carId
-  if GH.node and not sameModel then pcall(function() GH.node:setVisible(false) end) end
+  local same = GH.render and GH.carId == carId
+  if GH.node and not same then pcall(function() GH.node:setVisible(false) end) end
   GH.G, GH.idx, GH.delta, GH.ySm, GH.draw, GH.carId = G, 1, nil, nil, nil, carId
-  if sameModel then
-    if not GH.standIn then applyGhostSkin(GH.modelId, G.meta.skin) end
+  if same then
+    if GH.render == 'node' and not GH.standIn and GH.modelId and GH.modelId:find('#full', 1, true) then
+      applyGhostSkin(GH.modelCar, G.meta.skin, GH.modelId)
+    end
   else
     GH.node, GH.visible = nil, false
     attachModel()
@@ -782,12 +878,16 @@ end
 
 local function selectGhost(name)
   GH.err = nil
+  local tl = clock()
   local G = loadGhost(name)
+  if not S.yielding then perf('ghost file', tl) end
   if not G then GH.err = 'Unreadable ghost file: ' .. name; return end
   -- another version of the track: automatic alignment
   local sameTrack = (G.meta.track or '') == ac.getTrackID() and (G.meta.layout or '') == (ac.getTrackLayout() or '')
   if not sameTrack then
+    local ta = clock()
     local okA, info, warn = pcall(alignGhost, G)
+    perf('alignment', ta)
     if not okA then GH.err = 'Alignment failed: ' .. tostring(info)
     elseif warn then GH.err = warn end
   end
@@ -797,6 +897,16 @@ end
 
 -- Time attack: called on every valid lap of your car
 local TA = { beaten = 0, last = nil, pendingSave = nil }
+
+-- light/full model switch: models are loaded again
+local function reloadModels()
+  for _, nd in pairs(GH.cache) do if isNode(nd) then pcall(function() nd:setVisible(false); nd:dispose() end) end end
+  GH.cache, GH.parts, GH.skin, GH.unique, GH.livery, GH.pendingSkin = {}, {}, {}, {}, {}, {}
+  GH.node, GH.modelId, GH.loadingModel, GH.draw, GH.render, GH.shapeIdx = nil, nil, nil, nil, nil, nil
+  TA.preloaded = false
+  if GH.G then GH.carId = nil; useGhost(GH.G) end
+end
+
 onOwnLap = function(L)
   local meta = { car = ac.getCarID(0), carName = ac.getCarName and ac.getCarName(0) or '', driver = OWN_DRIVER, source = 'live',
     skin = skinOf(0) }
@@ -875,7 +985,7 @@ local function updateGhost(car)
   if not inPit and t > 0.5 and pos > 0.002 then
     GH.delta = t - ghostTimeAtPos(G, pos)
   end
-  if not GH.node then return end
+  if not GH.node and GH.render ~= 'shape' then return end
   local show = cfg.showGhost == 1 and not inPit and t > 0 and t < G.t[G.n]
   local fade = 1
   if show then
@@ -903,11 +1013,29 @@ local function updateGhost(car)
     fade = fadeAt(math.sqrt(dx * dx + dy * dy + dz * dz))
     if fade <= 0.004 then show = false end
     if show then
-      pcall(function() GH.node:setPosition(p); GH.node:setOrientation(look, up) end)
+      if GH.node then pcall(function() GH.node:setPosition(p); GH.node:setOrientation(look, up) end) end
       GH.p = p
+      if GH.render == 'shape' then
+        local okM, M = pcall(function()
+          -- CSP's simple shape of the car is in body space: placed like the body of the session car, moved to the ghost
+          local bt = ac.getCar(GH.shapeIdx or 0).bodyTransform
+          return bt:mul(mat4x4.look(bt.position, bt.look, bt.up)):mulSelf(mat4x4.look(p, look, up):inverseSelf())
+        end)
+        GH.shapeM = okM and M or nil
+      end
     end
   end
   GH.fade = show and fade or 0
+  if GH.render == 'shape' then
+    if show and GH.shapeM then
+      local D = GH.draw or {}
+      D.mode, D.alpha, D.t = 'shape', cfg.alpha * fade, S.t
+      GH.draw = D
+    else
+      GH.draw = nil
+    end
+    return
+  end
   local P = GH.parts[GH.modelId]
   local drawn = CAN_DRAW and P ~= nil
   local ghostLook = cfg.style == 1 and drawn
@@ -945,7 +1073,20 @@ end
 
 local function drawGhost(pass)
   local D = GH.draw
-  if not D or not GH.node or S.t - (D.t or -10) > 0.25 then return end
+  if not D or S.t - (D.t or -10) > 0.25 then return end
+  if D.mode == 'shape' then
+    if not GH.shapeM or not GH.shapeIdx then return end
+    local R = drawParams()
+    render.setBlendMode(render.BlendMode.AlphaBlend)
+    render.setDepthMode(render.DepthMode.ReadOnly)
+    render.setCullMode(render.CullMode.None)
+    R.shape.values.gAlpha = D.alpha
+    R.shape.transform = GH.shapeM
+    R.shape.mesh = ac.SimpleMesh.carShape(GH.shapeIdx, false)
+    pcall(render.mesh, R.shape)
+    return
+  end
+  if not GH.node then return end
   local P = GH.parts[GH.modelId]
   if not P then return end
   if pass == 'mirror' and D.mode ~= 'ghost' then return end
@@ -967,7 +1108,7 @@ local function drawGhost(pass)
     -- nearest surface first (depth only), then the colour on that surface: a see-through car, not an X-ray
     render.setDepthMode(render.DepthMode.Normal)
     drawGroups(P, R.depth)
-    local lv = GH.livery[GH.modelId]
+    local lv = GH.livery[GH.modelCar]
     R.solid.textures.txLivery = lv or false
     R.solid.values.gHasLivery = lv and 1 or 0
     R.solid.values.gAlpha = D.alpha
@@ -997,6 +1138,13 @@ local justUpdated = cfg.justUpdated or ''
 if justUpdated ~= '' then cfg.justUpdated = '' end
 function script.update(dt)
   S.t = S.t + dt
+  if dt > 0.1 and S.t > 1 then
+    local ms = dt * 1000
+    if ms > (S.hitchMs or 0) then
+      S.hitchMs = ms
+      S.hitchWhat = (S.event and S.t - dt - (S.eventT or -10) < 0.5) and S.event or 'nothing from GhostLab just before'
+    end
+  end
   local sim = ac.getSim()
   if not sim then return end
   if not started then
@@ -1010,6 +1158,12 @@ function script.update(dt)
       end
     end
     if justUpdated ~= '' then say('GhostLab updated to ' .. VERSION) end
+    -- time attack: your car's model loaded now, while you are still in the start menu
+    if cfg.timeAttack == 1 and cfg.style ~= 1 and not TA.preloaded then
+      TA.preloaded = true
+      ensureModel(ac.getCarID(0), true)
+      applyGhostSkin(ac.getCarID(0), skinOf(0), modelKey(ac.getCarID(0), true))
+    end
     -- last selected ghost: loaded over a few frames (no hitch when the session starts)
     if cfg.selected ~= '' then
       local okList = false
@@ -1022,7 +1176,9 @@ function script.update(dt)
   end
   if STARTUP then
     S.yielding = true
+    local t0 = clock()
     local okC, errC = coroutine.resume(STARTUP)
+    perf('ghost loading (per frame)', t0)
     S.yielding = false
     if not okC then GH.err = 'Could not load the ghost: ' .. tostring(errC) end
     if not okC or coroutine.status(STARTUP) == 'dead' then STARTUP = nil end
@@ -1049,13 +1205,17 @@ function script.update(dt)
   if sim.isPaused then return end
   local car = ac.getCar(0)
   if not car then return end
-  if cfg.timeAttack == 1 and not TA.preloaded then
+  if cfg.timeAttack == 1 and cfg.style ~= 1 and not TA.preloaded then
     TA.preloaded = true
-    ensureModel(ac.getCarID(0))   -- your car's model (and skin) ready before the first switch
-    applyGhostSkin(ac.getCarID(0), skinOf(0))
+    ensureModel(ac.getCarID(0), true)   -- time attack or full car look switched on later
+    applyGhostSkin(ac.getCarID(0), skinOf(0), modelKey(ac.getCarID(0), true))
   end
+  local t0 = clock()
   if cfg.autoOwn == 1 or cfg.timeAttack == 1 then updateOwnRecording(car) end
+  perf('lap recording', t0)
+  t0 = clock()
   updateGhost(car)
+  perf('ghost update', t0)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1070,6 +1230,7 @@ do
     return require('src/exchange')({
       S = S, VERSION = VERSION, say = say, fmtLap = fmtLap, ghostDir = ghostDir, safeName = safeName,
       listGhosts = function() return listGhosts() end, parseGhostName = parseGhostName, isOwnDriver = isOwnDriver,
+      niceDriver = niceDriver, trackKey = trackKey,
       selectGhost = function(name) listT = -10; selectGhost(name) end, refreshList = function() listT = -10 end,
       standIn = function() return cfg.standIn == 1 end,
       GREEN = GREEN, ORANGE = ORANGE, GREY = GREY,
@@ -1085,7 +1246,7 @@ pcall(function()
 end)
 
 local function ghostLabel(e, otherTrack)
-  local drv = isOwnDriver(e.driver) and 'You' or (e.driver:gsub('_+', ' '))
+  local drv = isOwnDriver(e.driver) and 'You' or niceDriver(e.driver)
   return string.format('%s   %s   %s', fmtLap(e.lapMs), e.car, drv)
 end
 
@@ -1176,7 +1337,7 @@ local function tabGhost()
   ui.separator()
   if GH.G then
     local m = GH.G.meta
-    local drv = isOwnDriver(m.driver) and 'You' or (m.driver or '?')
+    local drv = isOwnDriver(m.driver) and 'You' or (niceDriver(m.driver) ~= '' and niceDriver(m.driver) or (m.sharedBy or 'unknown driver'))
     ui.text(string.format('Ghost: %s (%s), %s', (m.carName and m.carName ~= '') and m.carName or (m.car or '?'), drv, fmtLap(GH.G.lapMs)))
     if GH.G.align then
       ui.text(string.format('Aligned on this track: mean error %.1f m, rotation %.0f°, length x%.3f', GH.G.align.rms, GH.G.align.deg, GH.G.align.ratio))
@@ -1207,6 +1368,7 @@ local function tabGhost()
       if ui.selectable(name, cfg.style == k - 1) and cfg.style ~= k - 1 then
         cfg.style = k - 1
         GH.err = nil
+        if GH.G then GH.carId = nil; useGhost(GH.G) end
       end
     end
   end)
@@ -1244,6 +1406,29 @@ local function tabGhost()
     if ui.itemHovered() then
       ui.setTooltip('A ghost of a car you do not have is drawn with your own car\'s 3D model. Off: delta only, no car shown.')
     end
+    if ui.checkbox('Use the ghost\'s skin', cfg.useSkins == 1) then
+      cfg.useSkins = cfg.useSkins == 1 and 0 or 1
+      if GH.G and GH.render == 'node' and GH.modelCar then
+        applyGhostSkin(GH.modelCar, (not GH.standIn) and GH.G.meta.skin or nil, GH.modelId)
+      end
+    end
+    if ui.itemHovered() then
+      ui.setTooltip('Off (default): the car\'s built-in look, nothing to load. On: the skin recorded with the ghost (or yours); '
+        .. 'loading its textures can freeze the game for a moment when a ghost loads.')
+    end
+    if ui.checkbox('Light ghost model (loads faster)', cfg.lightModel == 1) then
+      cfg.lightModel = cfg.lightModel == 1 and 0 or 1
+      reloadModels()
+    end
+    if ui.itemHovered() then
+      ui.setTooltip('On (default): the car\'s lower detail model (LOD B) when it has one: much quicker to load, '
+        .. 'hard to tell apart a few metres away. Off: the full detail model.')
+    end
+    local slow = {}
+    for k, v in pairs(PERF) do if v >= 5 then slow[#slow + 1] = string.format('%s %.0f ms', k, v) end end
+    table.sort(slow)
+    if #slow > 0 then ui.textDisabled('Slowest steps: ' .. table.concat(slow, ', ')) end
+    if S.hitchMs then ui.textDisabled(string.format('Longest frame: %.0f ms (%s)', S.hitchMs, S.hitchWhat or '?')) end
   end)
   if ui.checkbox('Save my best lap as a ghost', cfg.autoOwn == 1) then cfg.autoOwn = cfg.autoOwn == 1 and 0 or 1 end
   if ui.checkbox('Time attack: the ghost is always the best lap', cfg.timeAttack == 1) then
@@ -1260,8 +1445,9 @@ local function tabGhost()
 end
 
 local function driverOf(idx)
-  local car = ac.getCar(idx)
-  return tostring(opt(car, 'driverName') or 'driver')
+  local ok, name = pcall(ac.getDriverName, idx)
+  if ok and type(name) == 'string' and name ~= '' then return name end
+  return 'Driver'
 end
 
 saveScannedLap = function(lap)
@@ -1362,4 +1548,4 @@ end
 
 GHOSTLAB_TEST = { S = S, REC = REC, OWN = OWN, GH = GH, TA = TA, selectGhost = selectGhost, listGhosts = listGhosts,
   saveGhost = saveGhost, parseGhostName = parseGhostName, drawGhostList = drawGhostList,
-  setList = function(l) ghostList, listT = l, 1e9 end, cfg = cfg, SCAN = SCAN, Exchange = Exchange, exchangeErr = exchangeErr, Updater = Updater }
+  setList = function(l) ghostList, listT = l, 1e9 end, cfg = cfg, SCAN = SCAN, Exchange = Exchange, exchangeErr = exchangeErr, Updater = Updater, PERF = PERF }

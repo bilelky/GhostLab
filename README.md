@@ -68,7 +68,7 @@ On by default (**Time attack** checkbox in the Ghost tab).
 4. The lap is saved to the list 2 s after the line and stays selected, so your next session starts against your best lap.
 5. With no ghost selected, your first valid lap becomes the ghost, then each faster lap.
 
-3D models are loaded in the background (no freeze when the session starts or when crossing the line); the ghost appears as soon as its model is ready, the delta works right away.
+Performance: the see-through ghost of a car that is in the session (yours, typically) is drawn from Custom Shaders Patch's own simple shape of that car: nothing to load. The full car look needs the car's textured 3D model: it is loaded once, in the background, while you are still in the start menu (lower detail model by default); this can take a moment the first time. The delta works right away in every case. Ghost settings shows the slowest steps and the longest frame, to spot anything that could freeze the game.
 
 ### Ghost list
 
@@ -93,7 +93,7 @@ What happens when cars differ:
 - **Car not installed**: the ghost is drawn with your own car's 3D model as a stand-in (its trajectory, timing and delta are its own). A **Get the car** button opens the car's page when its author gave one. Turn off "Car not installed: show my car instead" in Ghost settings to get the delta only.
 - **Two mods of the same real car** (two "Mercedes GT3" from different modders): they have different folder names, so they are different cars on the Exchange. Their times are not comparable.
 - **Same car, other version** (same folder, modified physics): shown as "Other version of this car than yours", times not directly comparable.
-- **Same car, other skin**: no problem. Skins are never shared; GhostLab uses the ghost's skin if you have it, else yours, else the car's first skin.
+- **Same car, other skin**: no problem. Skins are never shared. By default the ghost shows the car's built-in look; with "Use the ghost's skin" on, it uses the ghost's skin if you have it, else yours.
 
 Shared files are checked by the server (coherent time, speed and distance, lap length close to the track's). This filters out broken or edited files, but a lap time on the Exchange is not proof of a clean lap.
 
@@ -116,9 +116,11 @@ Send the `.csv` file from the ghosts folder. The other driver only needs GhostLa
 | Setting | Default | Effect |
 |---|---|---|
 | Show ghost | on | Shows or hides the ghost car (the delta keeps working). |
-| Ghost look | Full car | **Full car**: the car with its own paint and skin. **See-through ghost**: a light blue glass-like ghost, the track stays visible through it. |
+| Ghost look | Full car | **Full car**: the car with its own paint. **See-through ghost**: a light blue glass-like ghost, the track stays visible through it. |
 | Opacity | 30 % | See-through ghost only (5 to 70 %). |
 | Ghost shadow | on | Shadow of the ghost car (full car look only). |
+| Light ghost model | on | Full car look: the car's lower detail model (LOD B) when it has one, much quicker to load and hard to tell apart a few metres away. Off: full detail model. |
+| Use the ghost's skin | off | Off: the car's built-in look, nothing to load. On: the skin recorded with the ghost (or yours); loading its textures can freeze the game for a moment when a ghost loads. |
 | Fade over | 8 m | Length of the fade zone above "Fully hidden within": the ghost fades out across it as you get closer (0: no fade). |
 | Fully hidden within | 4 m | The ghost is gone when it is closer than this to your car. |
 | Height | 0 cm | Vertical offset of the ghost model. |

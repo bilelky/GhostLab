@@ -178,6 +178,35 @@ return function(G)
     return nil
   end
 
+  -- ghosts you already shared (file -> ghost ID), to mark them in the share list
+  local function sharedFile() return ac.getFolder(ac.FolderID.Cfg) .. '\\apps\\GhostLab\\exchange_shared.txt' end
+  local shared = nil
+  local function loadShared()
+    if shared then return shared end
+    shared = {}
+    local ok, txt = pcall(io.load, sharedFile())
+    if ok and txt then for id, f in txt:gmatch('(%d+)=([^\r\n]+)') do shared[f] = tonumber(id) end end
+    return shared
+  end
+  local function saveShared()
+    local lines = {}
+    for f, id in pairs(shared or {}) do lines[#lines + 1] = id .. '=' .. f end
+    pcall(io.save, sharedFile(), table.concat(lines, '\n'))
+  end
+
+  -- readable names
+  local carNames = {}
+  local function carName(id)
+    if carNames[id] then return carNames[id] end
+    local n = carInfo(id).name
+    if n == '' then pcall(function() n = tostring(ac.getCarNameByID(id) or '') end) end
+    n = n:gsub('^"(.*)"$', '%1')
+    if n == '' or n == id then n = id:gsub('_', ' ') end
+    carNames[id] = n
+    return n
+  end
+  local function driverName(d) return G.niceDriver(d) end
+
   local function currentTrack() return ac.getTrackID(), ac.getTrackLayout() or '' end
   local function trackLength()
     local len = 0
@@ -357,8 +386,9 @@ return function(G)
     local S = ST.share
     S.file, S.msg, S.msgOk = file, nil, false
     local e = G.parseGhostName(file)
-    local info = carInfo(e.car)
-    S.title = string.format('%s %s', (info.name ~= '' and info.name or e.car), e.lapMs and G.fmtLap(e.lapMs) or '')
+    local track = e.track == G.trackKey() and tostring(ac.getTrackName() or '') or ''
+    if track == '' then track = e.track:gsub('[_%-]+', ' ') end
+    S.title = string.format('%s %s %s', carName(e.car), e.lapMs and G.fmtLap(e.lapMs) or '', track):gsub('%s+', ' '):sub(1, 80)
     S.description = ''
   end
 
@@ -396,7 +426,9 @@ return function(G)
     }, function(err, r)
       S.busy = false
       if err then S.msg, S.msgOk = 'Not shared: ' .. err, false return end
-      S.msg, S.msgOk = string.format('Shared (%s, %d KB). Thanks!', G.fmtLap(r.lapMs), math.floor((r.sizeBytes or 0) / 1024 + 0.5)), true
+      S.msg, S.msgOk = string.format('Shared (%s). Thanks!', G.fmtLap(r.lapMs)), true
+      loadShared()[S.file] = r.ghostID
+      saveShared()
       S.file = nil
       ST.f.mine = false
       X.refresh()
@@ -458,8 +490,32 @@ return function(G)
     end
   end
 
+  -- your ghosts for the share list: this track by default, fastest first
+  local candidates, candT, candKey = {}, -10, nil
+  local function shareCandidates()
+    local key = tostring(ST.shareAll)
+    if now() - candT < 3 and candKey == key then return candidates end
+    candT, candKey = now(), key
+    local here = G.trackKey()
+    local list = {}
+    for _, f in ipairs(G.listGhosts()) do
+      local e = G.parseGhostName(f)
+      if ST.shareAll or e.track == here then list[#list + 1] = e end
+    end
+    table.sort(list, function(x, y)
+      if x.track ~= y.track then
+        if x.track == here then return true elseif y.track == here then return false end
+        return x.track < y.track
+      end
+      return (x.lapMs or 1e12) < (y.lapMs or 1e12)
+    end)
+    candidates = list
+    return list
+  end
+
   local function shareLabel(e)
-    return string.format('%s  %s  %s  (%s)', e.lapMs and G.fmtLap(e.lapMs) or '?', e.car, G.isOwnDriver(e.driver) and 'You' or e.driver, e.track)
+    local drv = G.isOwnDriver(e.driver) and 'You' or driverName(e.driver)
+    return string.format('%s   %s%s', e.lapMs and G.fmtLap(e.lapMs) or '?', carName(e.car), drv ~= '' and ('   ' .. drv) or '')
   end
 
   local function drawShareForm()
@@ -468,16 +524,16 @@ return function(G)
     ui.textColored('Share: ' .. shareLabel(cur), G.GREEN)
     ui.setNextItemWidth(math.max(200, ui.availableSpaceX() - 50))
     S.title = ui.inputText('Title##xtitle', S.title)
-    S.description = ui.inputText('##xdesc', S.description, 0, vec2(math.max(200, ui.availableSpaceX()), 60))
-    ui.textDisabled('Description (optional): setup, conditions, tips...')
-    local info = carInfo(cur.car)
-    if not info.installed then ui.textColored('This car is not installed here: shared without car details.', G.ORANGE) end
+    S.description = ui.inputText('##xdesc', S.description, 0, vec2(math.max(200, ui.availableSpaceX()), 50))
+    ui.textDisabled('Description (optional)')
     if ST.me and (ST.me.userName or '') == '' then ui.textColored('Choose your Exchange name first.', G.ORANGE) end
     if S.busy then
       ui.textColored('Uploading...', G.GREY)
     else
-      if ui.button('Share on the Exchange') then doShare() end
-      ui.sameLine()
+      if #S.title:gsub('%s', '') >= 3 then
+        if ui.button('Share on the Exchange') then doShare() end
+        ui.sameLine()
+      end
       if ui.button('Cancel##xshare') then S.file, S.msg = nil, nil end
     end
     if S.msg and not S.busy then ui.textColored(S.msg, S.msgOk and G.GREEN or G.ORANGE) end
@@ -488,12 +544,31 @@ return function(G)
     if S.file then drawShareForm() return end
     if S.msg then ui.textColored(S.msg, S.msgOk and G.GREEN or G.ORANGE) end
     ui.treeNode('Share a ghost###xShare', function()
-      ui.setNextItemWidth(math.max(200, ui.availableSpaceX()))
-      ui.combo('##xshareFile', 'Pick one of your ghosts', function()
-        for _, f in ipairs(G.listGhosts()) do
-          if ui.selectable(shareLabel(G.parseGhostName(f)) .. '##xs' .. f, false) then startShare(f) end
+      if ui.checkbox('All tracks##xsAll', ST.shareAll == true) then ST.shareAll = not ST.shareAll; candT = -10 end
+      local list = shareCandidates()
+      if #list == 0 then
+        ui.textDisabled(ST.shareAll and 'No ghost yet.' or 'No ghost on this track yet.')
+        return
+      end
+      local sh = loadShared()
+      local rows = 0
+      local lastTrack = nil
+      for _, e in ipairs(list) do
+        rows = rows + 1
+        if ST.shareAll and e.track ~= lastTrack then rows = rows + 1; lastTrack = e.track end
+      end
+      lastTrack = nil
+      ui.childWindow('##xshareList', vec2(ui.availableSpaceX(), math.min(rows, 8) * 22 + 10), true, function()
+        for _, e in ipairs(list) do
+          if ST.shareAll and e.track ~= lastTrack then
+            lastTrack = e.track
+            ui.textColored((e.track:gsub('_', ' ')), G.GREY)
+          end
+          local label = shareLabel(e) .. (sh[e.file] and '   (shared)' or '')
+          if ui.selectable(label .. '##xs' .. e.file, false) then startShare(e.file) end
         end
       end)
+      ui.textDisabled('Click a ghost to share it. Tip: "Share on the Exchange" in the Ghost tab shares the selected ghost.')
     end)
   end
 
@@ -531,30 +606,127 @@ return function(G)
     if changed then X.refresh() end
   end
 
+  -- comments: own small window (like Setup Exchange) on CSP builds that have it, inline below the ghost otherwise
+  local canPopup = patch >= 3044 and ui.popup ~= nil
+  local function avail()
+    local ok, v = pcall(ui.availableSpace)
+    if ok and v and v.x then return v end
+    return vec2(400, 220)
+  end
+
+  local function drawComments(item, inWindow)
+    local C = ST.comments[item.ghostID]
+    if item.description and item.description ~= '' then
+      ui.textWrapped(item.description)
+      ui.separator()
+    end
+    if not C then return end
+    if C.err then ui.textColored(C.err, G.ORANGE) end
+    local function list()
+      if C.loading and #(C.items or {}) == 0 then ui.textDisabled('Loading comments...') end
+      if not C.loading and #(C.items or {}) == 0 then ui.textDisabled('No comments yet') end
+      for _, c in ipairs(C.items or {}) do
+        ui.pushID(c.commentID)
+        ui.textColored(c.userName or '?', G.GREEN)
+        ui.sameLine()
+        ui.textDisabled(os.date('%Y-%m-%d %H:%M', c.createdDate or 0))
+        if c.own then
+          ui.sameLine()
+          if ui.smallButton('Delete') then
+            api('DELETE', 'comments/' .. c.commentID, nil, function(err)
+              if err then C.err = err else loadComments(item) end
+            end)
+          end
+        end
+        ui.textWrapped(c.text or '')
+        ui.popID()
+      end
+    end
+    if inWindow then
+      local sp = avail()
+      ui.childWindow('##xcomments', vec2(sp.x, math.max(60, sp.y - 34)), false, list)
+    else
+      list()
+    end
+    if ST.session and ST.me and (ST.me.userName or '') ~= '' then
+      ui.setNextItemWidth(math.max(160, ui.availableSpaceX() - 60))
+      local s2, _, enter = ui.inputText('##xcomment', C.input)
+      C.input = s2
+      ui.sameLine()
+      if (ui.button('Send') or enter) and not C.sending then sendComment(item, C) end
+    elseif not ST.session then
+      ui.textDisabled('Connect to comment.')
+    else
+      ui.textDisabled('Choose your Exchange name to comment.')
+    end
+  end
+
+  local function openComments(item)
+    loadComments(item)
+    if item.description == nil then   -- older server: description only in the ghost's details
+      api('GET', 'ghosts/' .. item.ghostID, nil, function(err, r)
+        if not err and type(r) == 'table' then item.description = r.description or '' end
+      end)
+    end
+    if not canPopup then
+      ST.open[item.ghostID] = not ST.open[item.ghostID]
+      return
+    end
+    if ST.popupFor == item.ghostID then ST.popupFor = nil return end
+    ST.popupFor = item.ghostID
+    local closeCounter = 0
+    local pos = nil
+    pcall(function() pos = ui.itemRectMin() + ui.windowPos() + vec2(0, 22 - ui.getScrollY()) end)
+    ui.popup(function()
+      if ST.popupFor ~= item.ghostID or closeCounter > 1 then
+        ui.closePopup()
+        return
+      end
+      if not ui.windowFocused() then closeCounter = closeCounter + 1 else closeCounter = 0 end
+      drawComments(item, true)
+    end, {
+      size = { initial = vec2(420, 320) },
+      position = pos,
+      padding = vec2(12, 8),
+      title = 'Comments: ' .. (item.title or ''),
+      flags = type(ui.WindowFlags) == 'table' and ui.WindowFlags.NoCollapse or nil,
+      onClose = function() if ST.popupFor == item.ghostID then ST.popupFor = nil end end,
+    })
+  end
+
   local function drawItem(item)
     ui.pushID(item.ghostID)
     local info = carInfo(item.carID)
     ui.textColored(G.fmtLap(item.lapMs), G.GREEN)
     ui.sameLine()
     ui.text(item.title or '')
-    local who = item.driver or ''
-    if item.userName and item.userName ~= '' and item.userName ~= who then who = who .. ' (shared by ' .. item.userName .. ')' end
-    ui.textDisabled(string.format('%s  |  %s  |  %s', item.carName ~= '' and item.carName or item.carID, who,
-      os.date('%Y-%m-%d', item.createdDate or 0)))
-    if not isCurrentTrack(item) then
-      ui.textColored('Track: ' .. (item.trackName ~= '' and item.trackName or item.trackID) .. ' (other version: aligned automatically)', G.GREY)
+    -- car and driver; the sender only when it is someone else than the driver
+    local drv = driverName(item.driver)
+    local sender = item.userName or ''
+    local line = (item.carName ~= '' and item.carName or carName(item.carID))
+    if drv ~= '' then line = line .. '  -  ' .. drv end
+    if sender ~= '' and sender ~= drv then line = line .. (drv ~= '' and '  -  shared by ' or '  -  ') .. sender end
+    ui.textDisabled(line)
+    if ST.f.track ~= 1 and not isCurrentTrack(item) then
+      local tn = tostring(item.trackName or ''):gsub('^"(.*)"$', '%1')
+      ui.textDisabled('Track: ' .. (tn ~= '' and tn or item.trackID:gsub('_', ' ')))
     end
     if not info.installed then
-      ui.textColored(G.standIn() and 'Car not installed: shown with your car as a stand-in.' or 'Car not installed: delta only, no 3D model.', G.ORANGE)
+      ui.textColored(G.standIn() and 'Car not installed: your car is shown instead' or 'Car not installed', G.ORANGE)
       if item.carUrl and item.carUrl ~= '' then
         ui.sameLine()
         if ui.smallButton('Get the car') then os.openURL(item.carUrl) end
       end
     elseif info.fingerprint ~= '' and (item.carFingerprint or '') ~= '' and info.fingerprint ~= item.carFingerprint then
-      ui.textColored('Other version of this car than yours: times not directly comparable.', G.ORANGE)
+      ui.textColored('Different version of this car', G.ORANGE)
+      if ui.itemHovered() then ui.setTooltip('Your version of this car differs from the ghost\'s: lap times are not directly comparable.') end
     end
-    if item.hidden == 1 or item.hidden == true then ui.textColored('Hidden (reported), waiting for moderation', G.ORANGE) end
-    if item.description and item.description ~= '' and ST.open[item.ghostID] then ui.textWrapped(item.description) end
+    if item.hidden == 1 or item.hidden == true then ui.textColored('Hidden: reported, waiting for moderation', G.ORANGE) end
+    if item.description and item.description ~= '' then
+      local d = item.description:gsub('[\r\n]+', '  ')
+      if #d > 110 then d = d:sub(1, 107) .. '...' end
+      ui.textWrapped(d)
+    end
 
     local file = localFileOf(item.ghostID)
     local busy = ST.busy[item.ghostID]
@@ -573,12 +745,7 @@ return function(G)
     ui.sameLine()
     if ui.button(string.format('%sDislike %d###xd', item.myVote == -1 and '[x] ' or '', item.statDislikes or 0)) then vote(item, -1) end
     ui.sameLine()
-    if ui.button(string.format('Comments %d###xc', item.statComments or 0)) then
-      ST.open[item.ghostID] = not ST.open[item.ghostID]
-      if ST.open[item.ghostID] then loadComments(item) end
-    end
-    ui.sameLine()
-    ui.textDisabled(string.format('%d downloads', item.statDownloads or 0))
+    if ui.button(string.format('Comments %d###xc', item.statComments or 0)) then openComments(item) end
     if item.own then
       ui.sameLine()
       if confirmButton('del' .. item.ghostID, 'Remove', 'Click again to remove') then removeGhost(item) end
@@ -587,40 +754,7 @@ return function(G)
       if confirmButton('rep' .. item.ghostID, 'Report', 'Click again to report') then report(item) end
     end
 
-    if ST.open[item.ghostID] then
-      local C = ST.comments[item.ghostID]
-      if C then
-        if C.loading then ui.textColored('Loading comments...', G.GREY) end
-        if C.err then ui.textColored(C.err, G.ORANGE) end
-        for _, c in ipairs(C.items or {}) do
-          ui.pushID(c.commentID)
-          ui.textColored(c.userName or '?', G.GREEN)
-          ui.sameLine()
-          ui.textDisabled(os.date('%Y-%m-%d', c.createdDate or 0))
-          if c.own then
-            ui.sameLine()
-            if ui.smallButton('Delete') then
-              api('DELETE', 'comments/' .. c.commentID, nil, function(err)
-                if err then C.err = err else loadComments(item) end
-              end)
-            end
-          end
-          ui.textWrapped(c.text or '')
-          ui.popID()
-        end
-        if ST.session and ST.me and (ST.me.userName or '') ~= '' then
-          ui.setNextItemWidth(math.max(160, ui.availableSpaceX() - 60))
-          local s, _, enter = ui.inputText('##xcomment', C.input)
-          C.input = s
-          ui.sameLine()
-          if (ui.button('Send') or enter) and not C.sending then sendComment(item, C) end
-        elseif not ST.session then
-          ui.textDisabled('Connect to comment.')
-        else
-          ui.textDisabled('Choose your Exchange name to comment.')
-        end
-      end
-    end
+    if not canPopup and ST.open[item.ghostID] then drawComments(item, false) end
     ui.separator()
     ui.popID()
   end
