@@ -3,7 +3,7 @@
 -- Driving: pick a ghost recorded on the same circuit (another version of it is aligned automatically).
 -- Visual only: no collision, nothing is applied to your car.
 
-local VERSION = '1.0.1'
+local VERSION = '1.0.2'
 
 local DEFAULTS = { yOffset = 0, hideDist = 4, fadeLen = 8, shadows = 1, showGhost = 1, autoOwn = 1, selected = '',
   timeAttack = 1, trackOnly = 1, carOnly = 0, style = 0, alpha = 0.30, standIn = 1, skipVersion = '', justUpdated = '', useSkins = 0, lightModel = 1 }

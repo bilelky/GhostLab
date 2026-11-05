@@ -1,7 +1,7 @@
 -- GhostLab update check: the first time the main window is opened, asks the Exchange server (one small request,
 -- in the background) for the latest version (GitHub's latest release). Only when it is newer, a message offers
--- "Install update": the release zip is downloaded, checked, its apps/lua/GhostLab files are copied over this app,
--- and GhostLab reloads itself in game (no need to restart Assetto Corsa).
+-- "Install update": the release zip is downloaded, checked, its apps/lua/GhostLab files are written over this app
+-- (read straight from the zip in memory, the way CSP's AppShelf installs apps), and GhostLab reloads itself in game.
 
 local json = require('src/json')
 
@@ -97,6 +97,81 @@ return function(G)
     U.state, U.msg = 'available', msg
   end
 
+  local function finish(v)
+    U.state, U.msg, U.installed = 'installed', nil, v
+    G.say('GhostLab ' .. v .. ' installed, reloading...')
+    G.cfg.justUpdated = v
+    U.restartIn = 3   -- reload a few frames later, once this frame is done
+  end
+
+  local MANUAL = ': click "Release page" and install the zip by hand.'
+
+  -- reads the zip in memory and writes the files one by one, like CSP's own app installer (AppShelf):
+  -- no temporary extraction; GhostLab.lua then manifest.ini written last
+  local function installFromMemory(body, info)
+    local entries = io.scanZip(body)
+    if type(entries) ~= 'table' or #entries == 0 then fail('Install failed: the zip is empty or damaged' .. MANUAL) return end
+    local set = {}
+    for _, e in ipairs(entries) do set[e:lower()] = e end
+    local root = nil
+    for _, prefix in ipairs({ 'apps/lua/ghostlab/', 'ghostlab/', '' }) do
+      if set[prefix .. 'manifest.ini'] and set[prefix .. 'ghostlab.lua'] then root = prefix break end
+    end
+    if not root then fail('Install failed: GhostLab not found in the zip' .. MANUAL) return end
+    local manifestKey, mainKey = set[root .. 'manifest.ini'], set[root .. 'ghostlab.lua']
+    local manifest = io.loadFromZip(body, manifestKey) or ''
+    local main = io.loadFromZip(body, mainKey) or ''
+    local v = manifest:match('VERSION%s*=%s*([%w%.%-]+)')
+    if not v or not U.newer(v, G.VERSION) then fail('Install failed: the zip is not a newer GhostLab') return end
+    if not main:find('GhostLab', 1, true) then fail('Install failed: the zip is damaged' .. MANUAL) return end
+    local dst = slash(ac.getFolder(ac.FolderID.ScriptOrigin))
+    local failed = {}
+    local function put(rel, data)
+      local target = dst .. rel:gsub('/', '\\')
+      pcall(io.createFileDir, target)
+      local ok, res = pcall(io.save, target, data, true)
+      if not ok or res == false then failed[#failed + 1] = rel end
+    end
+    for _, e in ipairs(entries) do
+      local rel = e:sub(#root + 1)
+      if e:lower():sub(1, #root) == root and e ~= manifestKey and e ~= mainKey and rel ~= '' and rel:sub(-1) ~= '/'
+        and not rel:find('..', 1, true) and not rel:find(':', 1, true) and rel:sub(1, 1) ~= '/' then
+        local data = io.loadFromZip(body, e)
+        if data then put(rel, data) end
+      end
+    end
+    put(mainKey:sub(#root + 1), main)
+    put(manifestKey:sub(#root + 1), manifest)
+    if #failed > 0 then
+      fail('Install incomplete (' .. table.concat(failed, ', ') .. ')' .. MANUAL)
+      return
+    end
+    finish(v)
+  end
+
+  -- older CSP builds without io.scanZip: extraction into a temporary folder, then copy
+  local function installByExtraction(body, info)
+    local tmp = slash(ac.getFolder(ac.FolderID.ExtCache)) .. 'lua_apps\\GhostLab\\update_' .. tostring(info.version):gsub('[^%w%.]', '_') .. '\\'
+    removeTree(tmp)
+    io.extractFromZipAsync(body, tmp, nil, function(errZ)
+      if errZ then fail('Install failed: ' .. tostring(errZ) .. MANUAL) return end
+      local root = findAppRoot(tmp)
+      if not root then removeTree(tmp) fail('Install failed: GhostLab not found in the zip' .. MANUAL) return end
+      local manifest = io.load(root .. 'manifest.ini') or ''
+      local v = manifest:match('VERSION%s*=%s*([%w%.%-]+)')
+      if not v or not U.newer(v, G.VERSION) then removeTree(tmp) fail('Install failed: the zip is not a newer GhostLab') return end
+      local dst = slash(ac.getFolder(ac.FolderID.ScriptOrigin))
+      local failed, last = {}, {}
+      copyTree(root, dst, failed, last)
+      for _, pair in ipairs(last) do
+        if not io.copyFile(pair[1], pair[2], false) then failed[#failed + 1] = pair[1]:match('[^\\]+$') end
+      end
+      removeTree(tmp)
+      if #failed > 0 then fail('Install incomplete (' .. table.concat(failed, ', ') .. ')' .. MANUAL) return end
+      finish(v)
+    end)
+  end
+
   function U.install()
     local info = U.info
     if not info or U.state == 'installing' then return end
@@ -108,32 +183,14 @@ return function(G)
       end
       local body = response.body or ''
       if body:sub(1, 2) ~= 'PK' then fail('Download failed: not a zip file') return end
-      local tmp = slash(ac.getFolder(ac.FolderID.ExtCache)) .. 'lua_apps\\GhostLab\\update_' .. tostring(info.version):gsub('[^%w%.]', '_') .. '\\'
-      removeTree(tmp)
       U.msg = 'Installing...'
-      io.extractFromZipAsync(body, tmp, nil, function(errZ)
-        if errZ then fail('Install failed: ' .. tostring(errZ)) return end
-        local root = findAppRoot(tmp)
-        if not root then removeTree(tmp) fail('Install failed: GhostLab not found in the zip') return end
-        local manifest = io.load(root .. 'manifest.ini') or ''
-        local v = manifest:match('VERSION%s*=%s*([%w%.%-]+)')
-        if not v or not U.newer(v, G.VERSION) then removeTree(tmp) fail('Install failed: the zip is not a newer GhostLab') return end
-        local dst = slash(ac.getFolder(ac.FolderID.ScriptOrigin))
-        local failed, last = {}, {}
-        copyTree(root, dst, failed, last)
-        for _, pair in ipairs(last) do
-          if not io.copyFile(pair[1], pair[2], false) then failed[#failed + 1] = pair[1]:match('[^\\]+$') end
-        end
-        removeTree(tmp)
-        if #failed > 0 then
-          fail('Install incomplete (' .. table.concat(failed, ', ') .. '): install the zip by hand from the release page.')
-          return
-        end
-        U.state, U.msg, U.installed = 'installed', nil, v
-        G.say('GhostLab ' .. v .. ' installed, reloading...')
-        G.cfg.justUpdated = v
-        U.restartIn = 3   -- reload a few frames later, once this frame is done
-      end)
+      local ok, e
+      if io.scanZip and io.loadFromZip then
+        ok, e = pcall(installFromMemory, body, info)
+      else
+        ok, e = pcall(installByExtraction, body, info)
+      end
+      if not ok then fail('Install failed: ' .. tostring(e) .. MANUAL) end
     end)
   end
 

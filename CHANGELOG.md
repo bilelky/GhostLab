@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.2
+- In-app update: the release zip is read in memory and written file by file (the way CSP's AppShelf installs apps), no temporary extraction. Fixes "Install failed: GhostLab not found in the zip".
+
 ## 1.0.1
 - Exchange: the Comments button opens and closes the comments window (its X closes it too).
 - Exchange: a shared ghost is credited to the person who shares it, never to the original driver of a replay lap.

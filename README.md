@@ -148,7 +148,7 @@ Plain text, one file per ghost: `<track[-layout]>__<car>__<driver>__<m-ss-mmm>.c
 
 ## Publishing an update (maintainers)
 
-1. Raise `VERSION` in `apps/lua/GhostLab/GhostLab.lua` and in `apps/lua/GhostLab/manifest.ini` (same value).
+1. Raise `VERSION` in `apps/lua/GhostLab/GhostLab.lua` and in `apps/lua/GhostLab/manifest.ini` (same value). The update is only offered when the new number is higher (1.0.1, 1.0.2, 1.1...): re-uploading a zip under the same version updates nobody.
 2. Zip `apps`, `README.md`, `LICENSE` and `CHANGELOG.md` as `GhostLab-<version>.zip` (the zip must contain `apps/lua/GhostLab/`).
 3. Create a GitHub release with the tag `v<version>`, a short description (shown in the app) and the zip attached.
 4. The Exchange server reads the latest release of the repository set in its `GITHUB_REPO` variable (checked every 10 minutes); players see the message the next time they open GhostLab.
