@@ -25,7 +25,7 @@ const LIMITS = {
   description: 600,
   comment: 1000,
   reason: 300,
-  uploadsPerDay: 15,
+  uploadsPerDay: 50,               // per 24 h and per user (moderators: no limit)
   commentsPerDay: 60,
   votesPerDay: 600,
   sessionsPerHourPerIP: 30,
@@ -323,8 +323,14 @@ async function uploadGhost(ctx) {
   const p = await readJSON(ctx.request);
   const title = str(p.title, LIMITS.title);
   if (title.length < 3) fail(400, 'Title too short');
-  const n = await countSince(ctx.env, 'SELECT COUNT(*) AS n FROM ghosts WHERE userID = ? AND createdDate > ?', u.userID, DAY);
-  if (n >= LIMITS.uploadsPerDay) fail(429, 'Upload limit reached for today, try again tomorrow');
+  if (!u.moderator) {
+    const r = await ctx.env.DB.prepare('SELECT COUNT(*) AS n, MIN(createdDate) AS first FROM ghosts WHERE userID = ? AND createdDate > ?')
+      .bind(u.userID, now() - DAY).first();
+    if (r && r.n >= LIMITS.uploadsPerDay) {
+      const wait = Math.max(1, Math.ceil(((r.first || now()) + DAY - now()) / 3600));
+      fail(429, `Upload limit reached (${LIMITS.uploadsPerDay} ghosts per 24 h), next one possible in ${wait} h`);
+    }
+  }
 
   let bytes;
   try { bytes = b64ToBytes(p.file || ''); } catch (e) { fail(400, 'Invalid file encoding'); }
@@ -406,9 +412,13 @@ async function listGhosts(ctx) {
   }
   const search = str(q.get('search'), 60);
   if (search) {
-    const s = '%' + likeEscape(search) + '%';
-    where.push(`(g.title LIKE ? ESCAPE '\\' OR g.userName LIKE ? ESCAPE '\\' OR g.carName LIKE ? ESCAPE '\\')`);
-    args.push(s, s, s);
+    // every word must match one of: title, description, sharer name, car (name or folder), track (name or folder)
+    const fields = ['g.title', 'g.description', 'g.userName', 'g.carName', 'g.carID', 'g.trackName', 'g.trackID'];
+    for (const word of search.split(/\s+/).filter(Boolean).slice(0, 6)) {
+      const s = '%' + likeEscape(word) + '%';
+      where.push('(' + fields.map(f => `${f} LIKE ? ESCAPE '\\'`).join(' OR ') + ')');
+      for (let i = 0; i < fields.length; i++) args.push(s);
+    }
   }
   if (!(u && u.moderator && q.get('includeHidden') === '1')) where.push('g.hidden = 0');
   const order = {

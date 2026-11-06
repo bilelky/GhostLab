@@ -14,6 +14,7 @@ Visual only: no collision, nothing is applied to your car.
 - **Your best lap as a ghost**, saved automatically for each car and track.
 - **Time attack mode**: as soon as you beat the ghost on a valid lap, your lap replaces it at the line, with no manual step.
 - **Live delta** against the ghost, in its own small window.
+- **Ghost in your replays**: the ghost you drove against is in the replay of your session, exactly where it was (photo mode included).
 - **Ghost list sorted by track and lap time**, with filters for the current track and the current car.
 - **Other versions of a circuit**: a ghost recorded on one version (e.g. Spa OSRW) is aligned automatically on another version (e.g. Spa Kunos).
 - **Glued to the ground** of the loaded track, gone when it overlaps your car (cockpit view).
@@ -58,6 +59,12 @@ Do not touch the replay controls while it scans (a progress percentage is shown,
 4. As you get close it fades out progressively (from 12 m by default) and is gone under 4 m, so it does not get in the way in the cockpit. It fades back in as it pulls away. Both distances are adjustable.
 5. If a model sits slightly too high or too low, use the **Height** slider (±50 cm).
 
+### Ghost in replays
+
+While you drive, GhostLab writes the ghost's position and the delta into the replay (a few dozen bytes per frame). Watch the replay, in game or from Content Manager, photo mode included, with any camera: the ghost is exactly where it was, and the GhostLab Delta window shows the delta of that moment. "Show ghost", "Ghost look" and the fade near your car apply as usual.
+
+Works for replays of sessions driven with GhostLab 1.0.4 or newer. The ghost's car should be installed (otherwise your car stands in, as when driving). The ghost is hidden while "Find laps" or "Export as ghost" moves through the replay.
+
 ### Time attack mode
 
 On by default (**Time attack** checkbox in the Ghost tab).
@@ -86,7 +93,7 @@ Open the **Exchange** tab.
 2. **Browse**: by default you see the ghosts shared on the loaded track, fastest first. Filters: this track, other versions of this track, all tracks; my car only; cars I have; my ghosts. Search by title, car, track or name: a search looks on every track, and with several words all must match ("bmw monza"). Sort by fastest, newest, most liked, most downloaded or trending.
 3. **Download**: the ghost is saved in your ghosts folder and selected right away when it was recorded on the loaded track (another version of the track is aligned automatically). Then the button becomes **Drive against it**.
 4. **Like, dislike, comment** on any ghost (**Comments** opens a small window; click the button again or its X to close it); **Report** a fake or broken one (a ghost reported several times is hidden until a moderator checks it).
-5. **Share**: select a ghost in the Ghost tab and click **Share on the Exchange** (or pick one in "Share a ghost"), give it a title and an optional description (track temperature, weather, setup, tips), click **Share on the Exchange**. **Remove** takes it back at any time.
+5. **Share**: select a ghost in the Ghost tab and click **Share on the Exchange** (or pick one in "Share a ghost"), give it a title and an optional description (track temperature, weather, setup, tips), click **Share on the Exchange**. **Remove** takes it back at any time. Up to 50 shared ghosts per 24 h per player.
    A shared ghost always shows the Exchange name of the person who shares it: a lap exported from someone else's replay never carries that driver's name.
 
 What happens when cars differ:

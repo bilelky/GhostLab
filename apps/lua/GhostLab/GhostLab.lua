@@ -3,7 +3,7 @@
 -- Driving: pick a ghost recorded on the same circuit (another version of it is aligned automatically).
 -- Visual only: no collision, nothing is applied to your car.
 
-local VERSION = '1.0.3'
+local VERSION = '1.0.4'
 
 local DEFAULTS = { yOffset = 0, hideDist = 4, fadeLen = 8, shadows = 1, showGhost = 1, autoOwn = 1, selected = '',
   timeAttack = 1, trackOnly = 1, carOnly = 0, style = 0, alpha = 0.30, standIn = 1, skipVersion = '', justUpdated = '', useSkins = 0, lightModel = 1 }
@@ -970,43 +970,34 @@ local function fadeAt(d)
   return x * x * (3 - 2 * x)
 end
 
-local function updateGhost(car)
-  local G = GH.G
-  if not G then return end
-  do
-    local p = readTransform(car)
-    local h = p and heightAboveGround(p)
-    if h and h > -50 and h < 2 then GH.ownH = GH.ownH and (GH.ownH + (h - GH.ownH) * 0.05) or h end
+-- ghost pose at lap time t: position glued to the ground of the loaded track, look and up vectors
+local function ghostPose(G, t)
+  local i, f = ghostAt(G, t)
+  local p = vec3(lerp(G.x[i], G.x[i + 1], f), lerp(G.y[i], G.y[i + 1], f), lerp(G.z[i], G.z[i + 1], f))
+  -- glued to the ground: ground height of the current track + recorded ride height
+  -- (older ghost without that data: your own car's height above the ground)
+  local gy = groundY(p.x, p.y, p.z)
+  if gy then
+    local hg = G.hg[i] and G.hg[i + 1] and lerp(G.hg[i], G.hg[i + 1], f) or GH.ownH
+    if hg then
+      local target = gy + hg
+      GH.ySm = GH.ySm and (GH.ySm + (target - GH.ySm) * 0.5) or target
+      if math.abs(GH.ySm - target) > 1 then GH.ySm = target end
+      p.y = GH.ySm
+    end
   end
-  local t = num(opt(car, 'lapTimeMs'), 0) / 1000
-  local pos = num(opt(car, 'splinePosition'), 0)
-  local inPit = opt(car, 'isInPitlane') or opt(car, 'isInPit')
-  -- delta: your time minus the ghost's time at the same place
-  if not inPit and t > 0.5 and pos > 0.002 then
-    GH.delta = t - ghostTimeAtPos(G, pos)
-  end
-  if not GH.node and GH.render ~= 'shape' then return end
-  local show = cfg.showGhost == 1 and not inPit and t > 0 and t < G.t[G.n]
+  p.y = p.y + cfg.yOffset
+  local look = vec3(lerp(G.lx[i], G.lx[i + 1], f), lerp(G.ly[i], G.ly[i + 1], f), lerp(G.lz[i], G.lz[i + 1], f))
+  local up = vec3(lerp(G.ux[i], G.ux[i + 1], f), lerp(G.uy[i], G.uy[i + 1], f), lerp(G.uz[i], G.uz[i + 1], f))
+  pcall(function() look:normalize(); up:normalize() end)
+  return p, look, up
+end
+
+-- places the ghost model at a pose (nil: hidden), with the fade near your car
+local function applyPose(car, p, look, up)
+  local show = cfg.showGhost == 1 and p ~= nil
   local fade = 1
   if show then
-    local i, f = ghostAt(G, t)
-    local p = vec3(lerp(G.x[i], G.x[i + 1], f), lerp(G.y[i], G.y[i + 1], f), lerp(G.z[i], G.z[i + 1], f))
-    -- glued to the ground: ground height of the current track + recorded ride height
-    -- (older ghost without that data: your own car's height above the ground)
-    local gy = groundY(p.x, p.y, p.z)
-    if gy then
-      local hg = G.hg[i] and G.hg[i + 1] and lerp(G.hg[i], G.hg[i + 1], f) or GH.ownH
-      if hg then
-        local target = gy + hg
-        GH.ySm = GH.ySm and (GH.ySm + (target - GH.ySm) * 0.5) or target
-        if math.abs(GH.ySm - target) > 1 then GH.ySm = target end
-        p.y = GH.ySm
-      end
-    end
-    p.y = p.y + cfg.yOffset
-    local look = vec3(lerp(G.lx[i], G.lx[i + 1], f), lerp(G.ly[i], G.ly[i + 1], f), lerp(G.lz[i], G.lz[i + 1], f))
-    local up = vec3(lerp(G.ux[i], G.ux[i + 1], f), lerp(G.uy[i], G.uy[i + 1], f), lerp(G.uz[i], G.uz[i + 1], f))
-    pcall(function() look:normalize(); up:normalize() end)
     -- fades out as it gets close to you, gone when it is on top of you (so it never fills the cockpit)
     local cp = car.position
     local dx, dy, dz = p.x - cp.x, p.y - cp.y, p.z - cp.z
@@ -1058,6 +1049,130 @@ local function updateGhost(car)
   else
     GH.draw = nil
   end
+end
+
+local function hideGhost()
+  if GH.node and GH.visible then pcall(function() GH.node:setVisible(false) end); GH.visible = false end
+  GH.draw, GH.fade = nil, 0
+end
+
+-- Ghost in replays: while you drive, the ghost's pose and the delta are written into the replay (CSP replay stream,
+-- about 50 bytes per frame) with the list of ghosts used (replay blob). In the replay, including photo mode, the ghost
+-- is drawn exactly where it was, whatever the camera.
+local RP = { map = {}, gidOf = {}, nextGid = 1, inReplay = false, saved = nil, blobT = -10 }
+do
+  local okS, stream = pcall(function()
+    return ac.ReplayStream({ ac.StructItem.key('bilelky.GhostLab.ghost.1'), gid = ac.StructItem.uint16(), on = ac.StructItem.float(),
+      pos = ac.StructItem.vec3(), look = ac.StructItem.vec3(), up = ac.StructItem.vec3(),
+      d = ac.StructItem.float(), dv = ac.StructItem.float() })
+  end)
+  RP.stream = okS and stream or nil
+end
+local BLOB_KEY = 'bilelky.GhostLab.ghosts'
+local function blobField(v) return (tostring(v or ''):gsub('[\t\r\n]', ' ')) end
+
+local function replayGid(G)
+  local m = G.meta or {}
+  local key = table.concat({ blobField(m.car), blobField(m.skin), tostring(G.lapMs or 0), blobField(m.driver) }, '\t')
+  local gid = RP.gidOf[key]
+  if gid then return gid end
+  if RP.nextGid > 65000 then return nil end
+  gid = RP.nextGid
+  RP.nextGid = gid + 1
+  RP.gidOf[key] = gid
+  RP.map[gid] = { car = m.car or '', skin = m.skin, lapMs = G.lapMs or 0, driver = m.driver or '', carName = m.carName or '' }
+  local lines = {}
+  for k, e in pairs(RP.map) do
+    lines[#lines + 1] = table.concat({ k, blobField(e.car), blobField(e.skin), tostring(e.lapMs or 0), blobField(e.driver), blobField(e.carName) }, '\t')
+  end
+  pcall(ac.writeReplayBlob, BLOB_KEY, table.concat(lines, '\n'))
+  return gid
+end
+
+local function setVec(R, k, v)
+  if RP.vecSet then R[k]:set(v.x, v.y, v.z) else R[k] = v end
+end
+local function writeStream(R, gid, p, look, up, delta)
+  if gid then
+    R.gid, R.on = gid, 1
+    setVec(R, 'pos', p); setVec(R, 'look', look); setVec(R, 'up', up)
+  else
+    R.on = 0
+  end
+  if delta then R.d, R.dv = delta, 1 else R.dv = 0 end
+end
+local function recordReplay(G, p, look, up)
+  local R = RP.stream
+  if not R or RP.err then return end
+  local gid = p and replayGid(G) or nil
+  local ok, err = pcall(writeStream, R, gid, p, look, up, GH.delta)
+  if not ok and not RP.vecSet then
+    RP.vecSet = true   -- vectors written with :set() on CSP builds that do not copy them on assignment
+    ok, err = pcall(writeStream, R, gid, p, look, up, GH.delta)
+  end
+  if not ok then RP.err = tostring(err) end
+end
+
+local function replayEntry(gid)
+  local e = RP.map[gid]
+  if e or S.t - RP.blobT < 2 then return e end
+  RP.blobT = S.t
+  local okB, blob = pcall(ac.readReplayBlob, BLOB_KEY)
+  if not okB or type(blob) ~= 'string' then return nil end
+  for line in blob:gmatch('[^\n]+') do
+    local k, car, skin, lapMs, driver, carName = line:match('^(%d+)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t?([^\t]*)$')
+    k = tonumber(k)
+    if k and not RP.map[k] then
+      RP.map[k] = { car = car, skin = skin ~= '' and skin or nil, lapMs = tonumber(lapMs) or 0, driver = driver, carName = carName }
+    end
+  end
+  return RP.map[gid]
+end
+
+local function readStream(R)
+  local a, b, c = R.pos, R.look, R.up
+  return R.on, math.floor((R.gid or 0) + 0.5), vec3(a.x, a.y, a.z), vec3(b.x, b.y, b.z), vec3(c.x, c.y, c.z), R.d, R.dv
+end
+local function updateReplayGhost(sim)
+  local R = RP.stream
+  if not R then hideGhost() return end
+  local okR, on, gid, pos, look, up, d, dv = pcall(readStream, R)
+  GH.delta = okR and (dv or 0) > 0.99 and d or nil
+  local e = okR and (on or 0) > 0.99 and gid > 0 and replayEntry(gid)
+  if not e or e.car == '' then hideGhost() return end
+  -- the ghost model of that moment (your current ghost when it is the same car)
+  if not GH.G or GH.carId ~= e.car or (GH.G.replayStub and GH.G.replayGid ~= gid) then
+    useGhost({ meta = { car = e.car, skin = e.skin, driver = e.driver, carName = e.carName }, lapMs = e.lapMs, n = 0,
+      replayStub = true, replayGid = gid })
+  end
+  if not GH.node and GH.render ~= 'shape' then return end
+  pcall(function() look:normalize(); up:normalize() end)
+  if pos.x * pos.x + pos.y * pos.y + pos.z * pos.z < 0.01 then hideGhost() return end
+  local car = ac.getCar(0)
+  if not car then hideGhost() return end
+  applyPose(car, pos, look, up)
+end
+
+local function updateGhost(car)
+  local G = GH.G
+  if not G then recordReplay(nil, nil) return end
+  do
+    local p = readTransform(car)
+    local h = p and heightAboveGround(p)
+    if h and h > -50 and h < 2 then GH.ownH = GH.ownH and (GH.ownH + (h - GH.ownH) * 0.05) or h end
+  end
+  local t = num(opt(car, 'lapTimeMs'), 0) / 1000
+  local pos = num(opt(car, 'splinePosition'), 0)
+  local inPit = opt(car, 'isInPitlane') or opt(car, 'isInPit')
+  -- delta: your time minus the ghost's time at the same place
+  if not inPit and t > 0.5 and pos > 0.002 then
+    GH.delta = t - ghostTimeAtPos(G, pos)
+  end
+  local p, look, up
+  if not inPit and t > 0 and t < G.t[G.n] then p, look, up = ghostPose(G, t) end
+  recordReplay(G, p, look, up)
+  if not GH.node and GH.render ~= 'shape' then return end
+  applyPose(car, p, look, up)
 end
 
 -- drawing of the see-through ghost and of the fading full car (main view; ghost look also in the mirrors)
@@ -1185,10 +1300,28 @@ function script.update(dt)
   end
   if not opt(sim, 'isReplayActive') and SCAN.phase then SCAN.phase, SCAN.home = nil, nil end
   if opt(sim, 'isReplayActive') then
-    if GH.node and GH.visible then pcall(function() GH.node:setVisible(false) end); GH.visible = false end
-    GH.draw = nil
-    if SCAN.phase then updateScan(sim) else updateReplayRecording(sim) end
+    if not RP.inReplay then
+      RP.inReplay = true
+      if GH.G and not GH.G.replayStub then RP.saved = GH.G end
+    end
+    if SCAN.phase then
+      hideGhost()   -- no ghost while GhostLab moves through the replay
+      updateScan(sim)
+    else
+      updateReplayRecording(sim)
+      local t0 = clock()
+      updateReplayGhost(sim)
+      perf('ghost in replay', t0)
+    end
     return
+  end
+  if RP.inReplay then
+    -- back from the replay: the ghost you had
+    RP.inReplay = false
+    if GH.G and GH.G.replayStub then
+      if RP.saved then useGhost(RP.saved) else unloadGhost() end
+    end
+    RP.saved, GH.delta = nil, nil
   end
   if TA.pendingSave and S.t >= TA.pendingSave.at then
     local P = TA.pendingSave
@@ -1563,4 +1696,4 @@ end
 
 GHOSTLAB_TEST = { S = S, REC = REC, OWN = OWN, GH = GH, TA = TA, selectGhost = selectGhost, listGhosts = listGhosts,
   saveGhost = saveGhost, parseGhostName = parseGhostName, drawGhostList = drawGhostList,
-  setList = function(l) ghostList, listT = l, 1e9 end, cfg = cfg, SCAN = SCAN, Exchange = Exchange, exchangeErr = exchangeErr, Updater = Updater, PERF = PERF }
+  setList = function(l) ghostList, listT = l, 1e9 end, cfg = cfg, SCAN = SCAN, Exchange = Exchange, exchangeErr = exchangeErr, Updater = Updater, PERF = PERF, RP = RP }

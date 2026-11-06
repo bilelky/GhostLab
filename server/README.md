@@ -42,7 +42,7 @@ All responses are JSON (`{"error": "..."}` with a 4xx status on failure). Authen
 | `POST /session/begin` `{userID}` | Challenge for CSP's signature (`{key}`). |
 | `POST /session/finish` `{userID, header, signature}` | Checks the signature, returns `{session, userID, userName, moderator}`. |
 | `GET /me`, `POST /me` `{userName}` | Current user, choose a name (3 to 24 characters, unique). |
-| `GET /ghosts` | List: `trackID`, `layout`, `near` (track length in m: other versions of the circuit), `carID`, `userName`, `mine=1`, `search`, `orderBy` (`fastest`, `newest`, `liked`, `downloads`, `hot`), `offset`, `limit` (max 50). Returns `{total, items}`. |
+| `GET /ghosts` | List: `trackID`, `layout`, `near` (track length in m: other versions of the circuit), `carID`, `userName`, `mine=1`, `search` (words matched in title, description, name, car and track; all words must match), `orderBy` (`fastest`, `newest`, `liked`, `downloads`, `hot`), `offset`, `limit` (max 50). Returns `{total, items}`. |
 | `POST /ghosts` | Share: `{title, description, file (base64, gzip or CSP ac.compress output), trackName, trackLengthM, carName, carBrand, carAuthor, carVersion, carUrl, carFingerprint, cspVersion, appVersion}`. The file is checked (time, speed and distance coherence, lap length); its driver is replaced by the sharer's Exchange name. |
 | `GET /ghosts/<id>`, `DELETE /ghosts/<id>` | Details; remove (owner or moderator). |
 | `GET /ghosts/<id>/file` | Ghost file (CSV). |

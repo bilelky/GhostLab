@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4
+- Ghost in replays: while you drive, the ghost's position and the delta are written into the replay. In the replay (photo mode included, any camera) the ghost is exactly where it was, and the delta window shows the delta of that moment.
+- Exchange: up to 50 shared ghosts per 24 h (was 15); the message says when the next one is possible.
+
 ## 1.0.3
 - Exchange search: title, description, car, track and name, on every track. Several words: all must match ("bmw monza"). Clear button.
 - Exchange: the track of a ghost is shown whenever it is not the loaded track.
