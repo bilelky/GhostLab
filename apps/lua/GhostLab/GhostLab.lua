@@ -3,7 +3,7 @@
 -- Driving: pick a ghost recorded on the same circuit (another version of it is aligned automatically).
 -- Visual only: no collision, nothing is applied to your car.
 
-local VERSION = '1.0.4'
+local VERSION = '1.0.6'
 
 local DEFAULTS = { yOffset = 0, hideDist = 4, fadeLen = 8, shadows = 1, showGhost = 1, autoOwn = 1, selected = '',
   timeAttack = 1, trackOnly = 1, carOnly = 0, style = 0, alpha = 0.30, standIn = 1, skipVersion = '', justUpdated = '', useSkins = 0, lightModel = 1 }
@@ -125,8 +125,8 @@ local function saveGhost(lap, meta)
   for _, c in ipairs(trackCenterline()) do lines[#lines + 1] = string.format('S,%.2f,%.2f,%.2f', c[1], c[2], c[3]) end
   lines[#lines + 1] = HEAD
   for i = 1, lap.n do lines[#lines + 1] = lap.rows[i] end
-  local ok = pcall(io.save, ghostDir() .. name, table.concat(lines, '\n'))
-  return ok and name or nil
+  local ok, res = pcall(io.save, ghostDir() .. name, table.concat(lines, '\n'))
+  return (ok and res ~= false) and name or nil
 end
 
 local function loadGhost(name)
@@ -324,7 +324,25 @@ end
 -- Live laps of your car: your best lap is kept as a ghost automatically.
 -- Time attack mode: if the lap that just ended beats the current ghost, it becomes the ghost
 -- right away (at the line), without reloading any file.
-local OWN = { cur = nil, best = nil, lastLap = nil }
+local OWN = { cur = nil, best = nil, lastLap = nil, closing = nil, log = {} }
+
+-- Lap log: what happened to each of your laps (Ghost tab, and cfg\apps\GhostLab\laps.log)
+local function writeLapLog()
+  local lines = { string.format('GhostLab %s lap log - %s - %s - %s', VERSION, os.date('%Y-%m-%d'), trackKey(), tostring(ac.getCarID(0))) }
+  for i = #OWN.log, 1, -1 do
+    local e = OWN.log[i]
+    lines[#lines + 1] = string.format('%s  %s  %s', e.at, fmtLap(e.ms), e.v)
+  end
+  pcall(io.createDir, ac.getFolder(ac.FolderID.Cfg) .. '\\apps\\GhostLab')
+  pcall(io.save, ac.getFolder(ac.FolderID.Cfg) .. '\\apps\\GhostLab\\laps.log', table.concat(lines, '\r\n'))
+end
+local function lapLog(ms, verdict)
+  local e = { at = os.date('%H:%M:%S'), ms = ms, v = verdict }
+  table.insert(OWN.log, 1, e)
+  if #OWN.log > 40 then OWN.log[#OWN.log] = nil end
+  writeLapLog()
+  return e
+end
 local KEYS = { 't', 'pos', 'x', 'y', 'z', 'lx', 'ly', 'lz', 'ux', 'uy', 'uz', 'spd', 'gas', 'brk', 'gear', 'hg' }
 local function newOwnLap()
   local L = { rows = {}, n = 0 }
@@ -333,35 +351,64 @@ local function newOwnLap()
 end
 local onOwnLap   -- defined further down (ghost switch)
 
+-- A finished lap is checked half a second after the line: AC updates the lap time and the "last lap valid" flag
+-- of the lap that just ended a little after the lap counter, reading them at once could take the previous lap's.
+local function finishOwnLap(car)
+  local L = OWN.closing
+  OWN.closing = nil
+  local ms = num(opt(car, 'previousLapTimeMs'), -1)
+  local valid = opt(car, 'isLastLapValid')
+  if L.estMs and (ms <= 0 or math.abs(ms - L.estMs) > 1000) then ms = L.estMs end   -- AC's value not ready: time from the samples
+  local why = L.pit and 'pit lane during the lap'
+    or (L.invalid or valid == false) and 'invalid lap (track limits / cut)'
+    or L.n <= 50 and 'incomplete lap'
+    or ms <= 0 and 'no lap time'
+  if why then lapLog(ms > 0 and ms or nil, 'not saved: ' .. why) return end
+  L.ms = ms
+  if onOwnLap then onOwnLap(L) end
+end
+
 local function updateOwnRecording(car)
   local lc = num(opt(car, 'lapCount'), 0)
   if OWN.lastLap == nil then OWN.lastLap = lc end
   if lc ~= OWN.lastLap then
     local L = OWN.cur
-    local ms = num(opt(car, 'previousLapTimeMs'), -1)
-    local valid = opt(car, 'isLastLapValid')
-    -- validity: last-lap flag if available, plus isLapValid watched during the whole lap
-    if lc > OWN.lastLap and L and L.n > 50 and not L.pit and not L.invalid and ms > 0 and valid ~= false then
+    if lc > OWN.lastLap and L then
       -- drop the samples taken after the line (position back near 0)
       while L.n > 1 and L.pos[L.n] < 0.5 do
         for _, k in ipairs(KEYS) do L[k][L.n] = nil end
         L.rows[L.n] = nil
         L.n = L.n - 1
       end
-      L.ms = ms
-      if onOwnLap then onOwnLap(L) end
+      L.estMs = L.n > 0 and L.t[L.n] * 1000 or nil
+      if OWN.closing then finishOwnLap(car) end
+      L.closeAt = S.t + 0.5
+      OWN.closing = L
+    elseif lc > OWN.lastLap then
+      lapLog(num(opt(car, 'previousLapTimeMs'), -1) > 0 and num(opt(car, 'previousLapTimeMs'), -1) or nil,
+        'not recorded: GhostLab started during this lap')
     end
     OWN.cur = newOwnLap()
+    OWN.cur.t0 = S.t
     OWN.lastLap = lc
   end
+  if OWN.closing and S.t >= OWN.closing.closeAt then finishOwnLap(car) end
   local L = OWN.cur
   if not L then return end
-  if opt(car, 'isInPitlane') then L.pit = true end
-  if opt(car, 'isLapValid') == false then L.invalid = true end
+  -- pit and validity flags: not during the first half second of the lap (they can still be those of the lap before)
+  if not L.t0 or S.t - L.t0 >= 0.5 then
+    if opt(car, 'isInPitlane') then L.pit = true end
+    if opt(car, 'isLapValid') == false then L.invalid = true end
+  end
   local pos = num(opt(car, 'splinePosition'), 0)
   if L.n == 0 and pos > 0.5 then return end   -- samples before the line
   local p, l, u = readTransform(car)
   local tt = num(opt(car, 'lapTimeMs')) / 1000
+  if L.n > 0 and tt + 0.001 < L.t[L.n] then
+    -- lap time going back: the first samples still had the previous lap's time, they are dropped
+    for _, k in ipairs(KEYS) do L[k] = {} end
+    L.rows, L.n = {}, 0
+  end
   local spd, gas, brk, gear = num(opt(car, 'speedKmh')), num(opt(car, 'gas')), num(opt(car, 'brake')), math.floor(num(opt(car, 'gear')))
   local hg = heightAboveGround(p)
   local n = L.n + 1
@@ -876,6 +923,65 @@ local function alignGhost(G)
   return G.align, nil
 end
 
+-- Ghost per car: the ghost you choose for a car on a track (or the lap it saves) is remembered for that car and
+-- that track. At start: that ghost; else your best lap with this car here; else the fastest ghost of this car here;
+-- else no ghost. "Remove ghost" is remembered too (no ghost for that car until you pick one or set a new best).
+local MEM = nil
+local function memPath() return ac.getFolder(ac.FolderID.Cfg) .. '\\apps\\GhostLab\\ghost_per_car.txt' end
+local function memKey() return trackKey() .. '\t' .. tostring(ac.getCarID(0) or '') end
+local function memLoad()
+  if MEM then return MEM end
+  MEM = { order = {} }
+  local ok, txt = pcall(io.load, memPath())
+  if ok and type(txt) == 'string' then
+    for line in txt:gmatch('[^\r\n]+') do
+      local tk, car, f = line:match('^([^\t]+)\t([^\t]+)\t(.+)$')
+      if tk then
+        local k = tk .. '\t' .. car
+        if not MEM[k] then MEM.order[#MEM.order + 1] = k end
+        MEM[k] = f
+      end
+    end
+  end
+  return MEM
+end
+local function memSet(file)
+  local M = memLoad()
+  local k = memKey()
+  if M[k] == file then return end
+  if M[k] == nil then M.order[#M.order + 1] = k end
+  M[k] = file
+  local lines = {}
+  for i = math.max(1, #M.order - 499), #M.order do
+    local key = M.order[i]
+    if M[key] then lines[#lines + 1] = key .. '\t' .. M[key] end
+  end
+  pcall(io.createDir, ac.getFolder(ac.FolderID.Cfg) .. '\\apps\\GhostLab')
+  pcall(io.save, memPath(), table.concat(lines, '\n'))
+end
+local function ghostForThisCar()
+  local files = listGhosts()
+  local have = {}
+  for _, f in ipairs(files) do have[f] = true end
+  local m = memLoad()[memKey()]
+  if m == '-' then return nil end
+  if m and have[m] then return m end
+  local prefix = trackKey() .. '__' .. safeName(ac.getCarID(0)) .. '__'
+  local own, any
+  for _, f in ipairs(files) do
+    if f:sub(1, #prefix) == prefix then
+      local e = parseGhostName(f)
+      if e.lapMs then
+        if isOwnDriver(e.driver) then
+          if not own or e.lapMs < own.lapMs then own = e end
+        elseif not any or e.lapMs < any.lapMs then any = e end
+      end
+    end
+  end
+  local e = own or any
+  return e and e.file or nil
+end
+
 local function selectGhost(name)
   GH.err = nil
   local tl = clock()
@@ -892,6 +998,7 @@ local function selectGhost(name)
     elseif warn then GH.err = warn end
   end
   cfg.selected = name
+  memSet(name)
   useGhost(G)
 end
 
@@ -926,10 +1033,17 @@ onOwnLap = function(L)
     say(gain and string.format('Ghost beaten by %.3f s: your %s lap is the new ghost', gain, fmtLap(L.ms))
       or ('Your ' .. fmtLap(L.ms) .. ' lap is the new ghost'))
   end
+  local prevBest = OWN.best
   if beatsOwn or beatsGhost then
     if beatsOwn then OWN.best = L.ms end
+    local willSave = cfg.autoOwn == 1 or beatsGhost
+    local e = lapLog(L.ms, (beatsOwn and 'new best' or 'faster than the ghost') .. (beatsGhost and ', new ghost' or '')
+      .. (willSave and ', saving...' or ' (not saved: "Save my best lap as a ghost" is off)'))
     -- file written 2 s later (no hitch when crossing the line)
-    TA.pendingSave = { L = L, meta = meta, at = S.t + 2, select = beatsGhost }
+    TA.pendingSave = { L = L, meta = meta, at = S.t + 2, select = beatsGhost, log = e }
+  else
+    lapLog(L.ms, 'valid, not saved: slower than your best (' .. fmtLap(prevBest) .. ')'
+      .. (target and cfg.timeAttack == 1 and (' and the ghost (' .. fmtLap(target) .. ')') or ''))
   end
 end
 
@@ -1279,15 +1393,10 @@ function script.update(dt)
       ensureModel(ac.getCarID(0), true)
       applyGhostSkin(ac.getCarID(0), skinOf(0), modelKey(ac.getCarID(0), true))
     end
-    -- last selected ghost: loaded over a few frames (no hitch when the session starts)
-    if cfg.selected ~= '' then
-      local okList = false
-      for _, f in ipairs(listGhosts()) do if f == cfg.selected then okList = true end end
-      if okList then
-        local name = cfg.selected
-        STARTUP = coroutine.create(function() selectGhost(name) end)
-      end
-    end
+    -- the ghost of this car on this track (see ghostForThisCar), loaded over a few frames (no hitch at the start)
+    local name = ghostForThisCar()
+    cfg.selected = name or ''
+    if name then STARTUP = coroutine.create(function() selectGhost(name) end) end
   end
   if STARTUP then
     S.yielding = true
@@ -1328,9 +1437,14 @@ function script.update(dt)
     TA.pendingSave = nil
     if cfg.autoOwn == 1 or P.select then
       local name = saveGhost(P.L, P.meta)
+      if P.log then
+        P.log.v = P.log.v:gsub(', saving%.%.%.$', '') .. (name and ', saved' or ', SAVE FAILED (could not write the file)')
+        writeLapLog()
+      end
+      if not name then say('Could not save the lap as a ghost: see the lap log in the Ghost tab') end
       if name then
         listT = -10
-        if P.select and GH.G and GH.G.lapMs == P.L.ms then GH.G.name = name; cfg.selected = name
+        if P.select and GH.G and GH.G.lapMs == P.L.ms then GH.G.name = name; cfg.selected = name; memSet(name)
         else say('New best lap saved as a ghost: ' .. fmtLap(P.L.ms)) end
       end
     end
@@ -1452,6 +1566,7 @@ local function deleteSelected()
   else
     if GH.G and GH.G.name == f then unloadGhost() end
     cfg.selected = ''
+    if memLoad()[memKey()] == f then memSet('') end   -- back to the automatic choice
     say('Ghost deleted: ' .. f)
   end
 end
@@ -1478,7 +1593,7 @@ local function tabGhost()
     if GH.delta then
       ui.textColored(string.format('Delta: %+.2f s', GH.delta), GH.delta <= 0 and GREEN or rgbm(1, 0.5, 0.2, 1))
     end
-    if ui.button('Remove ghost') then unloadGhost(); cfg.selected = '' end
+    if ui.button('Remove ghost') then unloadGhost(); cfg.selected = ''; memSet('-') end
   end
   if cfg.selected ~= '' then
     if GH.G then ui.sameLine() end
@@ -1579,6 +1694,20 @@ local function tabGhost()
     end
   end
   end
+  ui.treeNode(string.format('Lap log (%d)###lapLog', #OWN.log), function()
+    if #OWN.log == 0 then
+      ui.textDisabled((cfg.autoOwn == 1 or cfg.timeAttack == 1) and 'Your laps will be listed here.'
+        or 'Lap recording is off ("Save my best lap" and "Time attack" are off).')
+    end
+    for _, e in ipairs(OWN.log) do
+      local bad = e.v:find('not ', 1, true) == 1 or e.v:find('FAILED', 1, true)
+      local good = e.v:find('saved$') or e.v:find('new ghost')
+      local col = e.v:find('FAILED', 1, true) and ORANGE or good and not bad and GREEN or nil
+      local line = string.format('%s  %s  %s', e.at, fmtLap(e.ms), e.v)
+      if col then ui.textColored(line, col) else ui.textWrapped(line) end
+    end
+    if ui.itemHovered() then ui.setTooltip('Also in Documents\\Assetto Corsa\\cfg\\apps\\GhostLab\\laps.log') end
+  end)
   if ui.button('Open ghosts folder') then pcall(os.showInExplorer, ghostDir()) end
 end
 
@@ -1696,4 +1825,4 @@ end
 
 GHOSTLAB_TEST = { S = S, REC = REC, OWN = OWN, GH = GH, TA = TA, selectGhost = selectGhost, listGhosts = listGhosts,
   saveGhost = saveGhost, parseGhostName = parseGhostName, drawGhostList = drawGhostList,
-  setList = function(l) ghostList, listT = l, 1e9 end, cfg = cfg, SCAN = SCAN, Exchange = Exchange, exchangeErr = exchangeErr, Updater = Updater, PERF = PERF, RP = RP }
+  setList = function(l) ghostList, listT = l, 1e9 end, cfg = cfg, SCAN = SCAN, Exchange = Exchange, exchangeErr = exchangeErr, Updater = Updater, PERF = PERF, RP = RP, memSet = memSet }

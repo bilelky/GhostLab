@@ -59,6 +59,10 @@ Do not touch the replay controls while it scans (a progress percentage is shown,
 4. As you get close it fades out progressively (from 12 m by default) and is gone under 4 m, so it does not get in the way in the cockpit. It fades back in as it pulls away. Both distances are adjustable.
 5. If a model sits slightly too high or too low, use the **Height** slider (±50 cm).
 
+### Lap log
+
+The **Lap log** section of the Ghost tab lists your laps of the session with what GhostLab did with each one: saved as a ghost, slower than your best, invalid lap (track limits / cut), pit lane, or save failed. The same list is written to `Documents\Assetto Corsa\cfg\apps\GhostLab\laps.log`.
+
 ### Ghost in replays
 
 While you drive, GhostLab writes the ghost's position and the delta into the replay (a few dozen bytes per frame). Watch the replay, in game or from Content Manager, photo mode included, with any camera: the ghost is exactly where it was, and the GhostLab Delta window shows the delta of that moment. "Show ghost", "Ghost look" and the fade near your car apply as usual.
@@ -76,6 +80,16 @@ On by default (**Time attack** checkbox in the Ghost tab).
 5. With no ghost selected, your first valid lap becomes the ghost, then each faster lap.
 
 Performance: the see-through ghost of a car that is in the session (yours, typically) is drawn from Custom Shaders Patch's own simple shape of that car: nothing to load. The full car look needs the car's textured 3D model: it is loaded once, in the background, while you are still in the start menu (lower detail model by default); this can take a moment the first time. The delta works right away in every case. Ghost settings shows the slowest steps and the longest frame, to spot anything that could freeze the game.
+
+### Ghost per car
+
+At start, GhostLab loads the ghost of the car you drive, on the loaded track:
+1. the ghost you picked last time for this car on this track (or the last best lap it saved with it);
+2. else your best lap with this car here;
+3. else the fastest ghost of this car here (downloaded, exported from a replay);
+4. else no ghost: with time attack on, your first valid lap becomes the ghost.
+
+A ghost of another car is never carried over from a previous session. If you pick one for this car, it is remembered for this car. "Remove ghost" is remembered as well (no ghost for that car until you pick one or set a new best). The memory is in `Documents\Assetto Corsa\cfg\apps\GhostLab\ghost_per_car.txt`.
 
 ### Ghost list
 

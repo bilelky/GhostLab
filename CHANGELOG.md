@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.6
+- Ghost per car: at start, the ghost of the car you drive. The ghost you pick for a car on a track (or the new best lap it saves) is remembered for that car and that track; without one, your best lap with this car here, else the fastest ghost of this car here, else no ghost. No more ghost of another car left over from a previous session. "Remove ghost" is remembered too.
+
+## 1.0.5
+- Fix: some valid laps were not saved. A finished lap is now checked half a second after the line, once AC has updated the lap time and the "last lap valid" flag; the pit and validity flags are ignored during the first half second of a lap (they could still be those of the lap before, so a clean lap right after a cut or an out lap was thrown away).
+- Lap log (Ghost tab, and cfg\apps\GhostLab\laps.log): every lap with what happened to it (saved, slower than your best, invalid, pit lane, save failed).
+
 ## 1.0.4
 - Ghost in replays: while you drive, the ghost's position and the delta are written into the replay. In the replay (photo mode included, any camera) the ghost is exactly where it was, and the delta window shows the delta of that moment.
 - Exchange: up to 50 shared ghosts per 24 h (was 15); the message says when the next one is possible.
